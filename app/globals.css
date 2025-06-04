@@ -5,6 +5,9 @@
 :root {
   --background: #ffffff;
   --foreground: #171717;
+  --primary-orange: #F8782E;
+  --background-light: #F5F5F5;
+  --text-dark: #000000;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -14,8 +17,260 @@
   }
 }
 
+/* Text rendering improvements for all browsers */
+* {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
 body {
   color: var(--foreground);
   background: var(--background);
   font-family: Arial, Helvetica, sans-serif;
+}
+
+/* Fix for card text to display consistently across browsers */
+.card {
+  background-color: var(--background-light);
+  padding: 1rem;
+  border-radius: 8px;
+  box-shadow: 0px 4px 10px rgba(0, 0, 0, 0.1);
+  color: var(--text-dark) !important;  /* Force text color */
+}
+
+.card h2,
+.card h3,
+.card p,
+.card span {
+  color: var(--text-dark) !important; /* Force text color */
+  opacity: 1 !important; /* Prevent transparency issues */
+  font-weight: 500;
+}
+
+/* Specific class for team/group card items */
+.card-item-text {
+  color: var(--text-dark) !important;
+  opacity: 1 !important;
+}
+
+/* Force visibility for labels like Miembros, Estado, etc. */
+.font-bold,
+.font-semibold,
+[class*="font-"] {
+  opacity: 1 !important;
+}
+
+.page-wrapper {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  min-height: 100vh;
+  padding: 2rem;
+  background-color: var(--background);
+}
+
+.form-container {
+  background-color: var(--background-light);
+  padding: 2rem;
+  border-radius: 12px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+  max-width: 700px;
+  width: 100%;
+  border: 2px solid var(--primary-orange);
+}
+
+.form-title {
+  font-size: 1.5rem;
+  color: var(--text-dark);
+  margin-bottom: 1rem;
+  border-bottom: 2px solid var(--primary-orange);
+  padding-bottom: 0.5rem;
+}
+
+.form-group {
+  margin-bottom: 1rem;
+}
+
+label {
+  display: block;
+  font-weight: bold;
+  margin-bottom: 0.3rem;
+  color: var(--text-dark);
+}
+
+input,
+select,
+textarea {
+  width: 100%;
+  padding: 0.6rem;
+  border: 1px solid #ccc;
+  border-radius: 6px;
+  font-size: 1rem;
+  background-color: white;
+  color: var(--text-dark);
+}
+
+button {
+  color: white;
+  border: none;
+  padding: 0.8rem 1.2rem;
+  font-size: 1rem;
+  border-radius: 6px;
+  cursor: pointer;
+  margin-top: 1rem;
+  transition: background-color 0.2s;
+}
+
+button:hover {
+  background-color: #e46a25;
+}
+
+.text-red-600 {
+  color: #dc2626 !important;
+}
+
+.text-green-600 {
+  color: #16a34a !important;
+}
+
+.map-container {
+  height: 300px;
+  margin-top: 0.5rem;
+  border-radius: 6px;
+  overflow: hidden;
+  border: 1px solid #ccc;
+}
+
+/* Card view styles for teams/groups - specific to the component in the screenshot */
+.card-view {
+  background-color: var(--background-light);
+  border-radius: 8px;
+  padding: 1rem;
+  margin-bottom: 1rem;
+}
+
+.card-view h2 {
+  color: var(--text-dark) !important;
+  font-weight: 600;
+  opacity: 1 !important;
+}
+
+.card-view .card-body p,
+.card-view .card-body span {
+  color: var(--text-dark) !important;
+  opacity: 1 !important;
+}
+
+/* Unión Comunaria specific fixes */
+[id*="union-comunaria"] *,
+.union-comunaria * {
+  color: var(--text-dark) !important;
+  opacity: 1 !important;
+}
+
+@keyframes check {
+  0% {
+    stroke-dasharray: 0 100;
+    opacity: 0;
+  }
+  40% {
+    stroke-dasharray: 100 0;
+    opacity: 1;
+  }
+  100% {
+    stroke-dasharray: 100 0;
+    opacity: 1;
+  }
+}
+
+.animate-check {
+  stroke-dasharray: 0 100;
+  animation: check 1s ease-in-out forwards;
+}
+
+@keyframes pulse {
+  0%, 100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+  50% {
+    transform: scale(1.05);
+    opacity: 0.8;
+  }
+}
+
+.animate-pulse {
+  animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+@keyframes scaleIn {
+  from {
+    transform: scale(0.95);
+    opacity: 0;
+  }
+  to {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+.animate-scale-in {
+  animation: scaleIn 0.2s ease-out forwards;
+}
+
+@keyframes fadeInOut {
+  0% { opacity: 0; }
+  10% { opacity: 1; }
+  90% { opacity: 1; }
+  100% { opacity: 0; }
+}
+
+.animate-fade-in-out {
+  animation: fadeInOut 3s ease-in-out forwards;
+}
+
+.leaflet-popup.popup-alto .leaflet-popup-content-wrapper {
+  background-color: #ff0000;
+  color: white;
+}
+.leaflet-popup.popup-mediano .leaflet-popup-content-wrapper {
+  background-color: #ff9900;
+  color: white;
+}
+.leaflet-popup.popup-bajo .leaflet-popup-content-wrapper {
+  background-color: #ffcc00;
+  color: black;
+}
+
+/* Estilos para los marcadores del mapa */
+.custom-marker {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  border-radius: 50%;
+  color: white;
+  font-weight: bold;
+  text-align: center;
+}
+
+.custom-marker.reporte {
+  background-color: #e53e3e;
+}
+
+.custom-marker.foco {
+  background-color: #f6ad55;
+}
+
+.custom-marker.selected {
+  background-color: #38a169;
+  font-size: 18px;
+}
+
+.marker-content {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  width: 100%;
+  height: 100%;
 }
