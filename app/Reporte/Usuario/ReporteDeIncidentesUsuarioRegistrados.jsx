@@ -1,13 +1,13 @@
 "use client"
 import React, { useState, useEffect } from 'react';
-import { useMutation} from '@apollo/client';
+import { useMutation, useQuery } from '@apollo/client';
 import { useFormik } from "formik";
 import * as Yup from 'yup';
 import 'leaflet/dist/leaflet.css';
 import L from 'leaflet';
 import '../../globals.css';
 import { useRouter } from 'next/navigation';
-import { CREAR_REPORTE_INCENDIO } from '../../Endpoints/endpoints_graphql';
+import { CREAR_REPORTE_INCENDIO, OBTENER_EQUIPOS, OBTENER_USUARIO_POR_TOKEN, CREAR_COMUNARIO_APOYO } from '../../Endpoints/endpoints_graphql';
 
 
 
@@ -25,7 +25,8 @@ const ConfirmReportModal = ({
                                 formData,
                                 loading,
                                 selectedClima,
-                                selectedEquipos
+                                selectedEquipos,
+                                apiError
                             }) => {
     if (!isOpen) return null;
 
@@ -129,6 +130,13 @@ const ConfirmReportModal = ({
                             Por favor verifica que toda la información sea correcta antes de enviar el reporte.
                         </p>
                     </div>
+
+                    {apiError && (
+                        <div className="p-4 mb-4 bg-red-50 border-l-4 border-red-500 text-red-700">
+                            <p className="font-medium">Error al enviar el reporte:</p>
+                            <p>{apiError}</p>
+                        </div>
+                    )}
                 </div>
 
                 <div className="bg-gray-50 px-6 py-4 flex justify-end gap-3">
@@ -169,9 +177,44 @@ const UsuariosIncidentForm = () => {
     const [success, setSuccess] = useState(false);
     const [selectedClima, setSelectedClima] = useState([]);
     const [selectedEquipos, setSelectedEquipos] = useState([]);
+    const [equipoQuantities, setEquipoQuantities] = useState({});
     const [isAuthenticated, setIsAuthenticated] = useState(false);
     const [mensaje, setMensaje] = useState(null);
     const [showConfirmModal, setShowConfirmModal] = useState(false);
+    const [apiError, setApiError] = useState(null);
+
+    // Inventario de recursos
+    const [inventory, setInventory] = useState([]);
+    const [loadingInventory, setLoadingInventory] = useState(false);
+
+    // Comunarios locales
+    const [communities, setCommunities] = useState([]);
+
+    // Datos del usuario y su equipo asignado
+    const { data: userData } = useQuery(OBTENER_USUARIO_POR_TOKEN, {
+        context: {
+            headers: { authorization: `Bearer ${localStorage.getItem('token')}` }
+        }
+    });
+
+    const { data: teamsData } = useQuery(OBTENER_EQUIPOS, {
+        context: {
+            headers: { authorization: `Bearer ${localStorage.getItem('token')}` }
+        }
+    });
+
+    const userId = userData?.obtenerUsuarioPorToken?.id;
+    const userTeam = teamsData?.obtenerEquipos?.find(t =>
+        t.id_lider_equipo?.id === userId || t.miembros.some(m => m.id_usuario.id === userId)
+    );
+    const userTeamId = userTeam?.id;
+
+    const [createComunario] = useMutation(CREAR_COMUNARIO_APOYO, {
+        context: {
+            headers: { authorization: `Bearer ${localStorage.getItem('token')}` }
+        }
+    });
+
     useEffect(() => {
         const token = localStorage.getItem('token');
         if (!token) {
@@ -190,6 +233,33 @@ const UsuariosIncidentForm = () => {
             }
         };
     }, []);
+
+    // Cargar inventario al montar el componente
+    useEffect(() => {
+        const fetchInventory = async () => {
+            setLoadingInventory(true);
+            try {
+                const response = await fetch('/api/inventario/stock');
+                if (!response.ok) throw new Error('Error al cargar inventario');
+                const data = await response.json();
+                setInventory(data);
+            } catch (err) {
+                console.error(err);
+            } finally {
+                setLoadingInventory(false);
+            }
+        };
+        fetchInventory();
+    }, []);
+
+    // Helpers para comunarios locales
+    const addCommunity = () => setCommunities(prev => [...prev, { nombre: '', edad: '' }]);
+    const removeCommunity = (index) => setCommunities(prev => prev.filter((_, i) => i !== index));
+    const updateCommunity = (index, field, value) => setCommunities(prev => {
+        const arr = [...prev];
+        arr[index][field] = value;
+        return arr;
+    });
 
     // Handle checkbox change for climate conditions
     const handleClimaChange = (e) => {
@@ -212,11 +282,30 @@ const UsuariosIncidentForm = () => {
             const newEquipos = [...selectedEquipos, value];
             setSelectedEquipos(newEquipos);
             formik.setFieldValue('equiposEnUso', newEquipos);
+            // Initialize quantity to 0 when selecting an item
+            setEquipoQuantities(prev => ({
+                ...prev,
+                [value]: 0
+            }));
         } else {
             const newEquipos = selectedEquipos.filter(item => item !== value);
             setSelectedEquipos(newEquipos);
             formik.setFieldValue('equiposEnUso', newEquipos);
+            // Remove quantity when deselecting an item
+            setEquipoQuantities(prev => {
+                const newQuantities = { ...prev };
+                delete newQuantities[value];
+                return newQuantities;
+            });
         }
+    };
+
+    // Handle quantity change
+    const handleQuantityChange = (itemName, quantity) => {
+        setEquipoQuantities(prev => ({
+            ...prev,
+            [itemName]: parseInt(quantity) || 0
+        }));
     };
 
     // Validation schema using Yup
@@ -255,61 +344,331 @@ const UsuariosIncidentForm = () => {
         },
         validationSchema,
         onSubmit: async (values) => {
+            if (!values.apoyoExterno) {
+                setError('Debes seleccionar el tipo de apoyo externo');
+                return;
+            }
             setError('');
             setShowConfirmModal(true);
         }
     });
 
-    // Función para confirmar y enviar el reporte
-    const confirmSubmit = async () => {
-        const token = localStorage.getItem('token');
-        if (!token) {
-            setError('No se encontró token de autenticación');
-            return;
-        }
-
+    // Función para enviar datos a la API REST
+    const enviarReporteAPI = async (datosReporte) => {
         try {
-            const input = {
-                nombreIncidente: formik.values.nombreIncidente,
-                controlado: formik.values.controlado,
-                extension: formik.values.extension,
-                condicionesClima: formik.values.condicionesClima,
-                equiposEnUso: formik.values.equiposEnUso,
-                numeroBomberos: parseInt(formik.values.numeroBomberos),
-                necesitaMasBomberos: formik.values.necesitaMasBomberos,
-                apoyoExterno: formik.values.apoyoExterno,
-                comentarioAdicional: formik.values.comentarioAdicional
-            };
+            const token = localStorage.getItem('token');
+            if (!token) {
+                throw new Error('No se encontró el token de autenticación');
+            }
 
-            const { data } = await createFireReport({
-                variables: { input },
-                context: {
-                    headers: {
-                        authorization: `Bearer ${token}`
-                    }
-                }
+            console.log('Enviando reporte a la API:', datosReporte);
+
+            const response = await fetch('http://localhost:5000/api/reportes', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${token}`
+                },
+                body: JSON.stringify(datosReporte)
             });
 
-            if (data.crearReporteIncendio) {
-                setSuccess(true);
-                setMensaje("Reporte enviado exitosamente");
-                setShowConfirmModal(false);
-
-                // Reset form
-                formik.resetForm();
-                setPosition(null);
-                setSelectedClima([]);
-                setSelectedEquipos([]);
-
-                // Redirect after 2 seconds
-                setTimeout(() => {
-                    setMensaje(null);
-                    router.push('/Homepage');
-                }, 2000);
+            if (!response.ok) {
+                const errorData = await response.json().catch(() => ({}));
+                throw new Error(errorData.message || `Error del servidor: ${response.status}`);
             }
+
+            const data = await response.json();
+            console.log('Respuesta del servidor (reporte):', data);
+
+            if (!data.success) {
+                throw new Error(data.message || 'Error al crear el reporte');
+            }
+
+            // Validación específica del ID del reporte
+            if (!data.data || typeof data.data.reporte_id === 'undefined') {
+                console.error('Respuesta del servidor sin ID de reporte:', data);
+                throw new Error('La respuesta del servidor no incluye el ID del reporte');
+            }
+
+            const reporteId = Number(data.data.reporte_id);
+            if (isNaN(reporteId) || reporteId <= 0) {
+                console.error('ID de reporte inválido:', reporteId);
+                throw new Error('ID de reporte inválido recibido del servidor');
+            }
+
+            console.log('ID del reporte creado:', reporteId);
+            return {
+                ...data.data,
+                reporte_id: reporteId
+            };
         } catch (error) {
-            console.error('Error creating fire report:', error);
-            setError(error.message || 'Error al enviar el reporte de incendio');
+            console.error('Error en enviarReporteAPI:', error);
+            throw error;
+        }
+    };
+
+    const enviarRecursosAPI = async (recursos, reporte_id) => {
+        try {
+            const token = localStorage.getItem('token');
+            if (!token) {
+                throw new Error('No se encontró el token de autenticación');
+            }
+
+            console.log('Enviando recursos:', recursos);
+
+            const recursosCreados = await Promise.all(recursos.map(async (recurso) => {
+                const response = await fetch('http://localhost:5000/api/recursos', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${token}`
+                    },
+                    body: JSON.stringify({
+                        nombre: recurso.nombre_articulo,
+                        cantidad: recurso.cantidad
+                    })
+                });
+
+                if (!response.ok) {
+                    const errorData = await response.json().catch(() => ({}));
+                    throw new Error(errorData.message || `Error al crear el recurso ${recurso.nombre_articulo}`);
+                }
+
+                const data = await response.json();
+                console.log('Respuesta del servidor (recurso):', data);
+
+                if (!data.success) {
+                    throw new Error(data.message || `Error al crear el recurso ${recurso.nombre_articulo}`);
+                }
+
+                // Asegurarse de que tenemos un ID válido
+                const recursoId = data.data.recurso_id;
+                if (!recursoId) {
+                    throw new Error(`No se recibió recurso_id para el recurso ${recurso.nombre_articulo}`);
+                }
+
+                return {
+                    ...data.data,
+                    nombre_articulo: recurso.nombre_articulo,
+                    cantidad: recurso.cantidad,
+                    recurso_id: Number(recursoId)
+                };
+            }));
+
+            return recursosCreados;
+        } catch (error) {
+            console.error('Error en enviarRecursosAPI:', error);
+            throw error;
+        }
+    };
+
+    const asignarRecursosAReporte = async (reporte_id, recursos) => {
+        try {
+            console.log('Asignando recursos al reporte:', { reporte_id, recursos });
+
+            const relaciones = await Promise.all(recursos.map(async (recurso) => {
+                // Asegurarse de que tenemos los IDs necesarios
+                const recursoId = recurso.recurso_id;
+                if (!recursoId || !reporte_id) {
+                    console.error('Datos de relación inválidos:', { recurso, reporte_id });
+                    throw new Error(`Faltan IDs necesarios para la relación: reporte_id=${reporte_id}, recurso_id=${recursoId}`);
+                }
+
+                const relacionData = {
+                    reporte_id: Number(reporte_id),
+                    recurso_id: Number(recursoId)
+                };
+
+                console.log('Enviando relación:', relacionData);
+
+                const response = await fetch('http://localhost:5000/api/reporte-recurso', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(relacionData)
+                });
+
+                if (!response.ok) {
+                    const errorData = await response.json().catch(() => ({}));
+                    throw new Error(errorData.message || 'Error al crear la relación reporte-recurso');
+                }
+
+                const data = await response.json();
+                console.log('Respuesta del servidor (relación):', data);
+
+                if (!data.success) {
+                    throw new Error(data.message || 'Error al crear la relación reporte-recurso');
+                }
+
+                return data.data;
+            }));
+
+            return relaciones;
+        } catch (error) {
+            console.error('Error en asignarRecursosAReporte:', error);
+            throw error;
+        }
+    };
+
+    const prepararDatosReporte = () => {
+        try {
+            // Validar datos requeridos
+            if (!userId || !formik.values.nombreIncidente || !formik.values.extension || 
+                !selectedClima || selectedClima.length === 0 || !formik.values.apoyoExterno ||
+                formik.values.controlado === undefined || formik.values.controlado === null) {
+                throw new Error('Faltan campos requeridos');
+            }
+
+            // Preparar recursos seleccionados
+            const recursos = selectedEquipos
+                .filter(nombre => equipoQuantities[nombre] > 0)
+                .map(nombre => ({
+                    nombre_articulo: nombre,
+                    cantidad: equipoQuantities[nombre] || 0
+                }));
+
+            const datosPreparados = {
+                usuario_id: userId,
+                nombre_incidente: formik.values.nombreIncidente,
+                controlado: formik.values.controlado,
+                extension: formik.values.extension,
+                condiciones_clima: selectedClima.join(', '),
+                numero_bomberos: parseInt(formik.values.numeroBomberos) || 0,
+                necesita_mas_bomberos: formik.values.necesitaMasBomberos || false,
+                apoyo_externo: formik.values.apoyoExterno,
+                comentario_adicional: formik.values.comentarioAdicional || '',
+                recursos: recursos
+            };
+
+            console.log('Datos preparados:', datosPreparados);
+            return datosPreparados;
+        } catch (error) {
+            console.error('Error al preparar datos:', error);
+            throw new Error(`Error al preparar datos: ${error.message}`);
+        }
+    };
+
+    const confirmSubmit = async () => {
+        try {
+            setApiError(null);
+            
+            // Verificar autenticación
+            const token = localStorage.getItem('token');
+            if (!token) {
+                setError('No se encontró token de autenticación. Por favor inicie sesión nuevamente.');
+                setShowConfirmModal(false);
+                router.push('/');
+                return;
+            }
+
+            // Validar formulario
+            try {
+                const errors = await formik.validateForm();
+                if (Object.keys(errors).length > 0) {
+                    setError('Por favor complete todos los campos requeridos correctamente');
+                    setShowConfirmModal(false);
+                    return;
+                }
+            } catch (validationError) {
+                console.error('Error en la validación del formulario:', validationError);
+                setError('Error al validar el formulario');
+                setShowConfirmModal(false);
+                return;
+            }
+
+            // Validaciones adicionales
+            if (!selectedClima || selectedClima.length === 0) {
+                setError('Debe seleccionar al menos una condición climática');
+                setShowConfirmModal(false);
+                return;
+            }
+
+            if (isNaN(formik.values.numeroBomberos) || formik.values.numeroBomberos < 0) {
+                setError('El número de bomberos debe ser un número válido mayor o igual a 0');
+                setShowConfirmModal(false);
+                return;
+            }
+
+            // Preparar datos
+            let datosCompletos;
+            try {
+                datosCompletos = prepararDatosReporte();
+            } catch (prepError) {
+                console.error('Error al preparar datos:', prepError);
+                setError(prepError.message);
+                setShowConfirmModal(false);
+                return;
+            }
+
+            const { recursos, ...datosReporte } = datosCompletos;
+
+            // Enviar reporte
+            let reporteCreado;
+            try {
+                reporteCreado = await enviarReporteAPI(datosReporte);
+                if (!reporteCreado || !reporteCreado.reporte_id) {
+                    throw new Error('No se recibió un reporte_id válido del reporte creado');
+                }
+                console.log('Reporte creado exitosamente con ID:', reporteCreado.reporte_id);
+            } catch (reporteError) {
+                console.error('Error al crear reporte:', reporteError);
+                setError(`Error al crear reporte: ${reporteError.message}`);
+                setShowConfirmModal(false);
+                return;
+            }
+
+            // Procesar recursos si existen
+            if (recursos && recursos.length > 0) {
+                try {
+                    // Crear recursos
+                    const recursosCreados = await enviarRecursosAPI(recursos, reporteCreado.reporte_id);
+                    console.log('Recursos creados:', recursosCreados);
+
+                    // Verificar que los recursos se crearon correctamente
+                    if (!recursosCreados || !Array.isArray(recursosCreados) || recursosCreados.length === 0) {
+                        throw new Error('No se pudieron crear los recursos');
+                    }
+
+                    // Verificar que cada recurso tenga un ID válido
+                    const recursosValidos = recursosCreados.every(r => r && r.recurso_id);
+                    if (!recursosValidos) {
+                        throw new Error('Algunos recursos no tienen recurso_id válido');
+                    }
+
+                    // Crear relaciones
+                    const relaciones = await asignarRecursosAReporte(reporteCreado.reporte_id, recursosCreados);
+                    console.log('Relaciones creadas:', relaciones);
+                } catch (recursosError) {
+                    console.error('Error al procesar recursos:', recursosError);
+                    setError(`Reporte creado pero hubo un error con los recursos: ${recursosError.message}`);
+                    setShowConfirmModal(false);
+                    return;
+                }
+            }
+
+            // Éxito
+            setSuccess(true);
+            setMensaje("Reporte y recursos enviados exitosamente");
+            setShowConfirmModal(false);
+
+            // Resetear formulario
+            formik.resetForm();
+            setPosition(null);
+            setSelectedClima([]);
+            setSelectedEquipos([]);
+            setEquipoQuantities({});
+            setCommunities([]);
+
+            // Redireccionar
+            setTimeout(() => {
+                setMensaje(null);
+                router.push('/Homepage');
+            }, 2000);
+
+        } catch (error) {
+            console.error('Error general en confirmSubmit:', error);
+            setError(error.message || 'Error inesperado al enviar el reporte');
             setShowConfirmModal(false);
         }
     };
@@ -353,6 +712,7 @@ const UsuariosIncidentForm = () => {
                     loading={loading}
                     selectedClima={selectedClima}
                     selectedEquipos={selectedEquipos}
+                    apiError={apiError}
                 />
                 {/* ---------- HERO ---------- */}
                 <div className="relative rounded-xl overflow-hidden mb-8 max-w-4xl mx-auto">
@@ -513,127 +873,125 @@ const UsuariosIncidentForm = () => {
                                     </h3>
                                 </header>
 
-                                {/* Radio buttons ocupan 100% */}
-                                <div className="bg-gray-50 p-4 rounded-lg">
-                                    <label className="block font-medium text-gray-700 mb-3">
-                                        ¿Está controlado el incendio? *
-                                    </label>
+                                <div className="grid md:grid-cols-2 gap-6">
+                                    {/* Left Column */}
+                                    <div className="space-y-6">
+                                        {/* Extensión */}
+                                        <div className="bg-gray-50 p-4 rounded-lg">
+                                            <label className="block font-medium text-gray-700 mb-1">
+                                                Extensión del área afectada *
+                                            </label>
+                                            <select
+                                                id="extension"
+                                                name="extension"
+                                                className={`w-full border rounded-lg p-3 bg-white focus:ring focus:ring-orange-200 focus:border-orange-500 transition-all ${
+                                                    formik.touched.extension && formik.errors.extension
+                                                        ? "border-red-300 bg-red-50"
+                                                        : "border-gray-300"
+                                                }`}
+                                                {...formik.getFieldProps("extension")}
+                                            >
+                                                <option value="">Seleccione uno</option>
+                                                <option value="Muy pequeño (menos de 1 hectárea)">
+                                                    Muy pequeño (menos de 1 ha)
+                                                </option>
+                                                <option value="Mediano (1-5 hectáreas)">
+                                                    Mediano (1-5 ha)
+                                                </option>
+                                                <option value="Grande (más de 5 hectáreas)">
+                                                    Grande (más de 5 ha)
+                                                </option>
+                                            </select>
+                                            {formik.touched.extension && formik.errors.extension ? (
+                                                <p className="text-red-500 text-sm mt-1">
+                                                    {formik.errors.extension}
+                                                </p>
+                                            ) : null}
+                                        </div>
 
-                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                                        {/* Sí */}
-                                        <label className="flex items-center justify-center w-full bg-white p-4 rounded-lg border border-gray-300 cursor-pointer hover:bg-orange-50 transition-colors">
-                                            <input
-                                                type="radio"
-                                                name="controlado"
-                                                value="true"
-                                                className="mr-3 text-orange-500 focus:ring-orange-500"
-                                                onChange={() => formik.setFieldValue("controlado", true)}
-                                                checked={formik.values.controlado === true}
-                                            />
-                                            <span className="font-medium text-center">
-                      Sí, está bajo control
-                    </span>
-                                        </label>
-
-                                        {/* No */}
-                                        <label className="flex items-center justify-center w-full bg-white p-4 rounded-lg border border-gray-300 cursor-pointer hover:bg-orange-50 transition-colors">
-                                            <input
-                                                type="radio"
-                                                name="controlado"
-                                                value="false"
-                                                className="mr-3 text-orange-500 focus:ring-orange-500"
-                                                onChange={() => formik.setFieldValue("controlado", false)}
-                                                checked={formik.values.controlado === false}
-                                            />
-                                            <span className="font-medium text-center">
-                      No, fuera de control
-                    </span>
-                                        </label>
+                                        {/* Condiciones del clima */}
+                                        <div className="bg-gray-50 p-4 rounded-lg">
+                                            <label className="block font-medium text-gray-700 mb-2">Condiciones del clima *</label>
+                                            <div className="grid grid-cols-3 gap-2">
+                                                <label className="flex items-center bg-white p-3 rounded-lg border border-gray-300 cursor-pointer hover:bg-orange-50 transition-colors">
+                                                    <input
+                                                        type="checkbox"
+                                                        name="clima"
+                                                        value="Calor"
+                                                        className="mr-2 text-orange-500"
+                                                        onChange={handleClimaChange}
+                                                        checked={selectedClima.includes("Calor")}
+                                                    />
+                                                    <span>Calor</span>
+                                                </label>
+                                                <label className="flex items-center bg-white p-3 rounded-lg border border-gray-300 cursor-pointer hover:bg-orange-50 transition-colors">
+                                                    <input
+                                                        type="checkbox"
+                                                        name="clima"
+                                                        value="Viento fuerte"
+                                                        className="mr-2 text-orange-500"
+                                                        onChange={handleClimaChange}
+                                                        checked={selectedClima.includes("Viento fuerte")}
+                                                    />
+                                                    <span>Viento</span>
+                                                </label>
+                                                <label className="flex items-center bg-white p-3 rounded-lg border border-gray-300 cursor-pointer hover:bg-orange-50 transition-colors">
+                                                    <input
+                                                        type="checkbox"
+                                                        name="clima"
+                                                        value="Lluvia"
+                                                        className="mr-2 text-orange-500"
+                                                        onChange={handleClimaChange}
+                                                        checked={selectedClima.includes("Lluvia")}
+                                                    />
+                                                    <span>Lluvia</span>
+                                                </label>
+                                            </div>
+                                            {formik.touched.condicionesClima && formik.errors.condicionesClima ? (
+                                                <p className="text-red-500 text-sm mt-1">
+                                                    {formik.errors.condicionesClima}
+                                                </p>
+                                            ) : null}
+                                        </div>
                                     </div>
 
-                                    {formik.touched.controlado && formik.errors.controlado ? (
-                                        <p className="text-red-500 text-sm mt-2">
-                                            {formik.errors.controlado}
-                                        </p>
-                                    ) : null}
-                                </div>
-
-                                {/* Extensión & Clima */}
-                                <div className="grid md:grid-cols-2 gap-6 mt-8">
-                                    {/* Extensión */}
-                                    <div>
-                                        <label className="block font-medium text-gray-700 mb-1">
-                                            Extensión del área afectada *
+                                    {/* Right Column */}
+                                    <div className="bg-gray-50 p-4 rounded-lg">
+                                        <label className="block font-medium text-gray-700 mb-3">
+                                            ¿Está controlado el incendio? *
                                         </label>
-                                        <select
-                                            id="extension"
-                                            name="extension"
-                                            className={`w-full border rounded-lg p-3 bg-white focus:ring focus:ring-orange-200 focus:border-orange-500 transition-all ${
-                                                formik.touched.extension && formik.errors.extension
-                                                    ? "border-red-300 bg-red-50"
-                                                    : "border-gray-300"
-                                            }`}
-                                            {...formik.getFieldProps("extension")}
-                                        >
-                                            <option value="">Seleccione uno</option>
-                                            <option value="Muy pequeño (menos de 1 hectárea)">
-                                                Muy pequeño (menos de 1 ha)
-                                            </option>
-                                            <option value="Mediano (1-5 hectáreas)">
-                                                Mediano (1-5 ha)
-                                            </option>
-                                            <option value="Grande (más de 5 hectáreas)">
-                                                Grande (más de 5 ha)
-                                            </option>
-                                        </select>
-                                        {formik.touched.extension && formik.errors.extension ? (
-                                            <p className="text-red-500 text-sm mt-1">
-                                                {formik.errors.extension}
-                                            </p>
-                                        ) : null}
-                                    </div>
+                                        <div className="grid grid-cols-1 gap-4">
+                                            <label className="flex items-center justify-center w-full bg-white p-4 rounded-lg border border-gray-300 cursor-pointer hover:bg-orange-50 transition-colors">
+                                                <input
+                                                    type="radio"
+                                                    name="controlado"
+                                                    value="true"
+                                                    className="mr-3 text-orange-500 focus:ring-orange-500"
+                                                    onChange={() => formik.setFieldValue("controlado", true)}
+                                                    checked={formik.values.controlado === true}
+                                                />
+                                                <span className="font-medium text-center">
+                                                    Sí, está bajo control
+                                                </span>
+                                            </label>
 
-                                    <div>
-                                        <label className="block font-medium text-gray-700 mb-2">Condiciones del clima *</label>
-                                        <div className="grid grid-cols-3 gap-2">
-                                            <label className="flex items-center bg-white p-2 rounded-lg border border-gray-300 cursor-pointer hover:bg-orange-50 transition-colors">
+                                            <label className="flex items-center justify-center w-full bg-white p-4 rounded-lg border border-gray-300 cursor-pointer hover:bg-orange-50 transition-colors">
                                                 <input
                                                     type="radio"
-                                                    name="clima"
-                                                    value="Calor"
-                                                    className="mr-2 text-orange-500"
-                                                    onChange={handleClimaChange}
-                                                    checked={selectedClima.includes("Calor")}
+                                                    name="controlado"
+                                                    value="false"
+                                                    className="mr-3 text-orange-500 focus:ring-orange-500"
+                                                    onChange={() => formik.setFieldValue("controlado", false)}
+                                                    checked={formik.values.controlado === false}
                                                 />
-                                                <span>Calor</span>
-                                            </label>
-                                            <label className="flex items-center bg-white p-2 rounded-lg border border-gray-300 cursor-pointer hover:bg-orange-50 transition-colors">
-                                                <input
-                                                    type="radio"
-                                                    name="clima"
-                                                    value="Viento fuerte"
-                                                    className="mr-2 text-orange-500"
-                                                    onChange={handleClimaChange}
-                                                    checked={selectedClima.includes("Viento fuerte")}
-                                                />
-                                                <span>Viento</span>
-                                            </label>
-                                            <label className="flex items-center bg-white p-2 rounded-lg border border-gray-300 cursor-pointer hover:bg-orange-50 transition-colors">
-                                                <input
-                                                    type="radio"
-                                                    name="clima"
-                                                    value="Lluvia"
-                                                    className="mr-2 text-orange-500"
-                                                    onChange={handleClimaChange}
-                                                    checked={selectedClima.includes("Lluvia")}
-                                                />
-                                                <span>Lluvia</span>
+                                                <span className="font-medium text-center">
+                                                    No, fuera de control
+                                                </span>
                                             </label>
                                         </div>
-                                        {formik.touched.condicionesClima &&
-                                        formik.errors.condicionesClima ? (
-                                            <p className="text-red-500 text-sm mt-1">
-                                                {formik.errors.condicionesClima}
+                                        {formik.touched.controlado && formik.errors.controlado ? (
+                                            <p className="text-red-500 text-sm mt-2">
+                                                {formik.errors.controlado}
                                             </p>
                                         ) : null}
                                     </div>
@@ -664,159 +1022,179 @@ const UsuariosIncidentForm = () => {
                                     </h3>
                                 </header>
 
-                                <div className="grid md:grid-cols-2 gap-6">
-                                    <div className="bg-gray-50 p-4 rounded-lg">
-                                        <label className="block font-medium text-gray-700 mb-2">Equipos en uso</label>
-                                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                                            {[
-                                                { value: "Mangueras", label: "Mangueras" },
-                                                { value: "Bombas de agua", label: "Bombas de agua" },
-                                                { value: "Camiones", label: "Camiones" },
-                                                { value: "Palas/herramientas", label: "Palas/herramientas" }
-                                            ].map(item => (
-                                                <label key={item.value} className="flex items-center bg-white p-3 rounded-lg border border-gray-300 cursor-pointer hover:bg-orange-50 transition-colors">
-                                                    <input
-                                                        type="checkbox"
-                                                        name="equipo"
-                                                        value={item.value}
-                                                        className="mr-2 text-orange-500 focus:ring-orange-500 rounded"
-                                                        onChange={handleEquipoChange}
-                                                        checked={selectedEquipos.includes(item.value)}
-                                                    />
-                                                    <span>{item.label}</span>
-                                                </label>
-                                            ))}
-                                        </div>
-                                    </div>
-
-                                    {/* Bomberos y necesidad */}
-                                    <div className="space-y-6">
-                                        {/* Número de bomberos */}
-                                        <div>
-                                            <label className="block font-medium text-gray-700 mb-1">
-                                                Número de bomberos presentes *
-                                            </label>
-                                            <div className="flex">
-                      <span className="inline-flex items-center px-3 rounded-l-lg border border-r-0 border-gray-300 bg-gray-50 text-gray-500">
-                        {/* ícono */}
-                          <svg
-                              xmlns="http://www.w3.org/2000/svg"
-                              className="h-5 w-5"
-                              fill="none"
-                              viewBox="0 0 24 24"
-                              stroke="currentColor"
-                          >
-                          <path
-                              strokeLinecap="round"
-                              strokeLinejoin="round"
-                              strokeWidth={2}
-                              d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z"
-                          />
-                        </svg>
-                      </span>
-                                                <input
-                                                    type="number"
-                                                    id="numeroBomberos"
-                                                    name="numeroBomberos"
-                                                    min="0"
-                                                    className={`flex-1 min-w-0 block w-full px-3 py-2 rounded-r-lg border focus:ring focus:ring-orange-200 focus:border-orange-500 ${
-                                                        formik.touched.numeroBomberos &&
-                                                        formik.errors.numeroBomberos
-                                                            ? "border-red-300 bg-red-50"
-                                                            : "border-gray-300"
-                                                    }`}
-                                                    {...formik.getFieldProps("numeroBomberos")}
-                                                />
+                                <div className="bg-gray-50 p-6 rounded-lg">
+                                    <div className="grid grid-cols-1 gap-4">
+                                        {loadingInventory ? (
+                                            <div className="flex items-center justify-center py-8">
+                                                <svg className="animate-spin h-8 w-8 text-orange-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                                                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                                                </svg>
                                             </div>
-                                            {formik.touched.numeroBomberos &&
-                                            formik.errors.numeroBomberos ? (
-                                                <p className="text-red-500 text-sm mt-1">
-                                                    {formik.errors.numeroBomberos}
-                                                </p>
-                                            ) : null}
-                                        </div>
-
-                                        {/* Necesita más bomberos */}
-                                        <div>
-                                            <label className="block font-medium text-gray-700 mb-2">
-                                                ¿Necesita más bomberos? *
-                                            </label>
-                                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                                                {/* Sí */}
-                                                <label className="flex items-center justify-center bg-white p-3 rounded-lg border border-gray-300 cursor-pointer hover:bg-orange-50 transition-colors">
-                                                    <input
-                                                        type="radio"
-                                                        name="necesitaMasBomberos"
-                                                        value="true"
-                                                        className="mr-2 text-orange-500"
-                                                        onChange={() =>
-                                                            formik.setFieldValue("necesitaMasBomberos", true)
-                                                        }
-                                                        checked={formik.values.necesitaMasBomberos === true}
-                                                    />
-                                                    <span className="font-medium text-center">
-                          Sí, se necesita apoyo
-                        </span>
-                                                </label>
-
-                                                {/* No */}
-                                                <label className="flex items-center justify-center bg-white p-3 rounded-lg border border-gray-300 cursor-pointer hover:bg-orange-50 transition-colors">
-                                                    <input
-                                                        type="radio"
-                                                        name="necesitaMasBomberos"
-                                                        value="false"
-                                                        className="mr-2 text-orange-500"
-                                                        onChange={() =>
-                                                            formik.setFieldValue("necesitaMasBomberos", false)
-                                                        }
-                                                        checked={formik.values.necesitaMasBomberos === false}
-                                                    />
-                                                    <span className="font-medium text-center">
-                          No, suficiente personal
-                        </span>
-                                                </label>
-                                            </div>
-                                            {formik.touched.necesitaMasBomberos &&
-                                            formik.errors.necesitaMasBomberos ? (
-                                                <p className="text-red-500 text-sm mt-1">
-                                                    {formik.errors.necesitaMasBomberos}
-                                                </p>
-                                            ) : null}
-                                        </div>
+                                        ) : inventory.length === 0 ? (
+                                            <p className="text-gray-500 text-center py-4">No hay recursos disponibles</p>
+                                        ) : (
+                                            inventory.map(item => (
+                                                <div key={item.id_articulo} className="bg-white p-4 rounded-lg border border-gray-200 hover:border-orange-300 transition-colors">
+                                                    <div className="flex items-center justify-between">
+                                                        <div className="flex items-center space-x-3">
+                                                            <input
+                                                                type="checkbox"
+                                                                name="equipo"
+                                                                value={item.nombre_articulo}
+                                                                className="h-5 w-5 text-orange-500 focus:ring-orange-500 rounded"
+                                                                onChange={handleEquipoChange}
+                                                                checked={selectedEquipos.includes(item.nombre_articulo)}
+                                                            />
+                                                            <span className="font-medium text-gray-700">{item.nombre_articulo}</span>
+                                                        </div>
+                                                        <div className="flex items-center space-x-3">
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => handleQuantityChange(item.nombre_articulo, Math.max(0, (equipoQuantities[item.nombre_articulo] || 0) - 1))}
+                                                                disabled={!selectedEquipos.includes(item.nombre_articulo)}
+                                                                className="w-8 h-8 rounded-full bg-gray-100 text-gray-600 flex items-center justify-center hover:bg-orange-100 disabled:opacity-50 disabled:hover:bg-gray-100 transition-colors"
+                                                            >
+                                                                <span className="text-xl font-bold">−</span>
+                                                            </button>
+                                                            <span className="w-8 text-center font-medium text-gray-700">
+                                                                {equipoQuantities[item.nombre_articulo] || 0}
+                                                            </span>
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => handleQuantityChange(item.nombre_articulo, (equipoQuantities[item.nombre_articulo] || 0) + 1)}
+                                                                disabled={!selectedEquipos.includes(item.nombre_articulo)}
+                                                                className="w-8 h-8 rounded-full bg-gray-100 text-gray-600 flex items-center justify-center hover:bg-orange-100 disabled:opacity-50 disabled:hover:bg-gray-100 transition-colors"
+                                                            >
+                                                                <span className="text-xl font-bold">+</span>
+                                                            </button>
+                                                            <span className="text-sm text-gray-500 min-w-[3rem]">{item.medida_abreviada}</span>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            ))
+                                        )}
                                     </div>
                                 </div>
+                            </section>
 
-                                {/* Apoyo externo */}
-                                <div className="mt-6">
-                                    <label className="block font-medium text-gray-700 mb-1">
-                                        Apoyo externo recibido *
-                                    </label>
-                                    <select
-                                        id="apoyoExterno"
-                                        name="apoyoExterno"
-                                        className={`w-full border rounded-lg p-3 bg-white focus:ring focus:ring-orange-200 focus:border-orange-500 transition-all ${
-                                            formik.touched.apoyoExterno && formik.errors.apoyoExterno
-                                                ? "border-red-300 bg-red-50"
-                                                : "border-gray-300"
-                                        }`}
-                                        {...formik.getFieldProps("apoyoExterno")}
-                                    >
-                                        <option value="">Seleccione uno</option>
-                                        <option value="Ninguno">Ninguno</option>
-                                        <option value="Comunidades cercanas">Comunidades cercanas</option>
-                                        <option value="Policía">Policía</option>
-                                        <option value="Ejército">Fuerza Area Boliviana</option>
-                                        <option value="Ejército">Armada Boliviana</option>
-                                        <option value="Ejército">Ejercito Boliviano</option>
+                            {/* === BOMBEROS Y NECESIDAD === */}
+                            <section>
+                                <header className="flex items-center mb-4">
+                                    <div className="bg-orange-100 p-2 rounded-lg mr-3">
+                                        <svg
+                                            xmlns="http://www.w3.org/2000/svg"
+                                            className="h-5 w-5 text-orange-600"
+                                            fill="none"
+                                            viewBox="0 0 24 24"
+                                            stroke="currentColor"
+                                        >
+                                            <path
+                                                strokeLinecap="round"
+                                                strokeLinejoin="round"
+                                                strokeWidth={2}
+                                                d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z"
+                                            />
+                                        </svg>
+                                    </div>
+                                    <h3 className="font-semibold text-lg text-gray-800">
+                                        Bomberos y Necesidad
+                                    </h3>
+                                </header>
 
+                                <div className="mt-6 space-y-6">
+                                    {/* Número de bomberos */}
+                                    <div>
+                                        <label className="block font-medium text-gray-700 mb-1">
+                                            Número de bomberos presentes *
+                                        </label>
+                                        <div className="flex">
+                          <span className="inline-flex items-center px-3 rounded-l-lg border border-r-0 border-gray-300 bg-gray-50 text-gray-500">
+                            {/* ícono */}
+                              <svg
+                                  xmlns="http://www.w3.org/2000/svg"
+                                  className="h-5 w-5"
+                                  fill="none"
+                                  viewBox="0 0 24 24"
+                                  stroke="currentColor"
+                              >
+                              <path
+                                  strokeLinecap="round"
+                                  strokeLinejoin="round"
+                                  strokeWidth={2}
+                                  d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z"
+                              />
+                            </svg>
+                          </span>
+                                            <input
+                                                type="number"
+                                                id="numeroBomberos"
+                                                name="numeroBomberos"
+                                                min="0"
+                                                className={`flex-1 min-w-0 block w-full px-3 py-2 rounded-r-lg border focus:ring focus:ring-orange-200 focus:border-orange-500 ${
+                                                    formik.touched.numeroBomberos &&
+                                                    formik.errors.numeroBomberos
+                                                        ? "border-red-300 bg-red-50"
+                                                        : "border-gray-300"
+                                                }`}
+                                                {...formik.getFieldProps("numeroBomberos")}
+                                            />
+                                        </div>
+                                        {formik.touched.numeroBomberos &&
+                                        formik.errors.numeroBomberos ? (
+                                            <p className="text-red-500 text-sm mt-1">
+                                                {formik.errors.numeroBomberos}
+                                            </p>
+                                        ) : null}
+                                    </div>
 
-                                        <option value="Otro">Otro</option>
-                                    </select>
-                                    {formik.touched.apoyoExterno && formik.errors.apoyoExterno ? (
-                                        <p className="text-red-500 text-sm mt-1">
-                                            {formik.errors.apoyoExterno}
-                                        </p>
-                                    ) : null}
+                                    {/* Necesita más bomberos */}
+                                    <div>
+                                        <label className="block font-medium text-gray-700 mb-2">
+                                            ¿Necesita más bomberos? *
+                                        </label>
+                                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                                            {/* Sí */}
+                                            <label className="flex items-center justify-center bg-white p-3 rounded-lg border border-gray-300 cursor-pointer hover:bg-orange-50 transition-colors">
+                                                <input
+                                                    type="radio"
+                                                    name="necesitaMasBomberos"
+                                                    value="true"
+                                                    className="mr-2 text-orange-500"
+                                                    onChange={() =>
+                                                        formik.setFieldValue("necesitaMasBomberos", true)
+                                                    }
+                                                    checked={formik.values.necesitaMasBomberos === true}
+                                                />
+                                                <span className="font-medium text-center">
+                                          Sí, se necesita apoyo
+                                        </span>
+                                            </label>
+
+                                            {/* No */}
+                                            <label className="flex items-center justify-center bg-white p-3 rounded-lg border border-gray-300 cursor-pointer hover:bg-orange-50 transition-colors">
+                                                <input
+                                                    type="radio"
+                                                    name="necesitaMasBomberos"
+                                                    value="false"
+                                                    className="mr-2 text-orange-500"
+                                                    onChange={() =>
+                                                        formik.setFieldValue("necesitaMasBomberos", false)
+                                                    }
+                                                    checked={formik.values.necesitaMasBomberos === false}
+                                                />
+                                                <span className="font-medium text-center">
+                                          No, suficiente personal
+                                        </span>
+                                            </label>
+                                        </div>
+                                        {formik.touched.necesitaMasBomberos &&
+                                        formik.errors.necesitaMasBomberos ? (
+                                            <p className="text-red-500 text-sm mt-1">
+                                                {formik.errors.necesitaMasBomberos}
+                                            </p>
+                                        ) : null}
+                                    </div>
                                 </div>
                             </section>
 
@@ -840,6 +1218,106 @@ const UsuariosIncidentForm = () => {
                 </span>
                                 </div>
                             </section>
+
+                            {/* === APOYO EXTERNO === */}
+                            <section>
+                                <label className="block font-medium text-gray-700 mb-2">
+                                    ¿Qué tipo de apoyo externo recibe? *
+                                </label>
+                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                                    <label className="flex items-center justify-center bg-white p-3 rounded-lg border border-gray-300 cursor-pointer hover:bg-orange-50 transition-colors">
+                                        <input
+                                            type="radio"
+                                            name="apoyoExterno"
+                                            value="Ninguno"
+                                            className="mr-2 text-orange-500"
+                                            onChange={formik.handleChange}
+                                            checked={formik.values.apoyoExterno === "Ninguno"}
+                                        />
+                                        <span className="font-medium">Ninguno</span>
+                                    </label>
+
+                                    <label className="flex items-center justify-center bg-white p-3 rounded-lg border border-gray-300 cursor-pointer hover:bg-orange-50 transition-colors">
+                                        <input
+                                            type="radio"
+                                            name="apoyoExterno"
+                                            value="Policía"
+                                            className="mr-2 text-orange-500"
+                                            onChange={formik.handleChange}
+                                            checked={formik.values.apoyoExterno === "Policía"}
+                                        />
+                                        <span className="font-medium">Policía</span>
+                                    </label>
+
+                                    <label className="flex items-center justify-center bg-white p-3 rounded-lg border border-gray-300 cursor-pointer hover:bg-orange-50 transition-colors">
+                                        <input
+                                            type="radio"
+                                            name="apoyoExterno"
+                                            value="Ejército"
+                                            className="mr-2 text-orange-500"
+                                            onChange={formik.handleChange}
+                                            checked={formik.values.apoyoExterno === "Ejército"}
+                                        />
+                                        <span className="font-medium">Ejército</span>
+                                    </label>
+
+                                    <label className="flex items-center justify-center bg-white p-3 rounded-lg border border-gray-300 cursor-pointer hover:bg-orange-50 transition-colors">
+                                        <input
+                                            type="radio"
+                                            name="apoyoExterno"
+                                            value="Otros"
+                                            className="mr-2 text-orange-500"
+                                            onChange={formik.handleChange}
+                                            checked={formik.values.apoyoExterno === "Otros"}
+                                        />
+                                        <span className="font-medium">Otros</span>
+                                    </label>
+                                </div>
+                                {formik.touched.apoyoExterno && formik.errors.apoyoExterno ? (
+                                    <p className="text-red-500 text-sm mt-1">{formik.errors.apoyoExterno}</p>
+                                ) : null}
+                            </section>
+                                    
+                            {/* === COMUNARIOS LOCALES === 
+                            <section>
+                                <label className="block font-medium text-gray-700 mb-2">Comunarios locales (opcional)</label>
+                                {communities.length > 0 && communities.map((comm, idx) => (
+                                    <div key={idx} className="flex items-end gap-3 mb-2">
+                                        <input
+                                            type="text"
+                                            placeholder="Nombre"
+                                            className="flex-1 border border-gray-300 rounded-lg p-2"
+                                            value={comm.nombre}
+                                            onChange={(e) => updateCommunity(idx, 'nombre', e.target.value)}
+                                        />
+                                        <input
+                                            type="number"
+                                            min="1"
+                                            className="w-24 border border-gray-300 rounded-lg p-2"
+                                            placeholder="Edad"
+                                            value={comm.edad}
+                                            onChange={(e) => updateCommunity(idx, 'edad', e.target.value)}
+                                        />
+                                        <button
+                                            type="button"
+                                            onClick={() => removeCommunity(idx)}
+                                            className="text-red-600 hover:text-red-800"
+                                        >
+                                            Eliminar
+                                        </button>
+                                    </div>
+                                ))}
+                                <button
+                                    type="button"
+                                    onClick={addCommunity}
+                                    className="mt-2 text-orange-600 hover:text-orange-800 flex items-center gap-2"
+                                >
+                                    <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                                        <path fillRule="evenodd" d="M10 3a1 1 0 011 1v5h5a1 1 0 110 2h-5v5a1 1 0 11-2 0v-5H4a1 1 0 110-2h5V4a1 1 0 011-1z" clipRule="evenodd" />
+                                    </svg>
+                                    Añadir comunario
+                                </button>
+                            </section>*/}
 
                             {/* === BOTONES === */}
                             <div className="flex flex-wrap justify-between items-center">

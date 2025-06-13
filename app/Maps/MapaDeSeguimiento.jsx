@@ -292,29 +292,25 @@ function MapaDeSeguimiento() {
 
     const formatearFechaNASA = (acq_date, acq_time) => {
         if (!acq_date) return "Fecha no disponible";
-
         try {
-            const [year, month, day] = acq_date.split('-');
+            const [year, month, day] = acq_date.split('-').map(Number);
 
-            // Siempre aseguramos que `acq_time` tenga 4 dígitos (ej: "0451")
+            if (isNaN(year) || isNaN(month) || isNaN(day)) {
+                return "Fecha inválida";
+            }
+
             const time = acq_time?.toString().padStart(4, '0');
             const hours = time.slice(0, 2);
             const minutes = time.slice(2);
 
-            // Validar hora y minuto
             const hNum = parseInt(hours, 10);
             const mNum = parseInt(minutes, 10);
 
-            const horaValida =
-                !isNaN(hNum) && !isNaN(mNum) &&
-                hNum >= 0 && hNum <= 23 &&
-                mNum >= 0 && mNum <= 59;
-
+            const horaValida = !isNaN(hNum) && !isNaN(mNum) && hNum >= 0 && hNum <= 23 && mNum >= 0 && mNum <= 59;
             const horaFormateada = horaValida ? `${hours}:${minutes}` : '00:00';
 
-            return `${day}/${month}/${year}, ${horaFormateada}`;
-        } catch (err) {
-            console.error("Error al formatear fecha NASA:", err);
+            return `${day.toString().padStart(2, '0')}/${month.toString().padStart(2, '0')}/${year}, ${horaFormateada}`;
+        } catch {
             return "Fecha inválida";
         }
     };
