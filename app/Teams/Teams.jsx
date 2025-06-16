@@ -86,16 +86,41 @@ const Teams = () => {
         onCancel: null
     });
 
+    // Función para obtener el nombre del lugar usando Nominatim
+    const obtenerNombreLugar = async (lat, lng) => {
+        try {
+            const res = await fetch(
+                `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lng}&format=json`
+            );
+            const data = await res.json();
+            
+            // Construir una descripción detallada del lugar
+            const partes = [];
+            if (data.address) {
+                if (data.address.city) partes.push(data.address.city);
+                if (data.address.town) partes.push(data.address.town);
+                if (data.address.village) partes.push(data.address.village);
+                if (data.address.municipality) partes.push(data.address.municipality);
+                if (data.address.county) partes.push(data.address.county);
+                if (data.address.state) partes.push(data.address.state);
+            }
+            
+            return partes.length > 0 ? partes.join(", ") : "Ubicación desconocida";
+        } catch (err) {
+            console.error("Error al obtener nombre del lugar:", err);
+            return "Error al obtener ubicación";
+        }
+    };
+
     // ───────── mochila (Paso 4) ─────────
     // Cambiar el estado inicial de backpack a un objeto vacío
     const [backpack, setBackpack] = useState({});
-    const [communities, setCommunities] = useState([
-        { nombre: '', edad: '', contacto: '' }
-    ]);
+    const [communities, setCommunities] = useState([]);
 
     const [comunarios, setComunarios] = useState([]);
     const [loadingComunarios, setLoadingComunarios] = useState(false);
     const [comunariosPorEquipo, setComunariosPorEquipo] = useState({});
+    const [locationNames, setLocationNames] = useState({});
 
     const addCommunity = () => {
         setCommunities(prev => [...prev, { nombre: '', edad: '', contacto: '' }]);
@@ -123,7 +148,7 @@ const Teams = () => {
             [-30, -80], // S-O (lat, lng)
             [-5,  -50], // N-E
         ],
-        maxBoundsViscosity: 0.7,  // “Rebote” al llegar al borde
+        maxBoundsViscosity: 0.7,  // "Rebote" al llegar al borde
     };
 
 
@@ -143,19 +168,24 @@ const Teams = () => {
 
     const cargarTodosLosComunarios = async () => {
         try {
-            const { data } = await obtenerComunariosPorEquipo({
-                variables: { Equipoid: null } // Asumiendo que tu API soporta esto
+            // Obtener comunarios para cada equipo
+            const promises = teamsData.obtenerEquipos.map(team => 
+                obtenerComunariosPorEquipo({
+                    variables: { Equipoid: team.id }
+                })
+            );
+
+            const results = await Promise.all(promises);
+            
+            const agrupados = {};
+            results.forEach((result, index) => {
+                const equipoId = teamsData.obtenerEquipos[index].id;
+                if (result.data?.obtenerComunariosApoyoPorEquipo) {
+                    agrupados[equipoId] = result.data.obtenerComunariosApoyoPorEquipo;
+                }
             });
 
-            if (data?.obtenerComunariosApoyoPorEquipo) {
-                const agrupados = data.obtenerComunariosApoyoPorEquipo.reduce((acc, comunario) => {
-                    const equipoId = comunario.Equipoid.id;
-                    if (!acc[equipoId]) acc[equipoId] = [];
-                    acc[equipoId].push(comunario);
-                    return acc;
-                }, {});
-                setComunariosPorEquipo(agrupados);
-            }
+            setComunariosPorEquipo(agrupados);
         } catch (error) {
             console.error("Error al cargar comunarios:", error);
             showNotification("error", "Error al cargar comunarios de apoyo");
@@ -419,10 +449,10 @@ const Teams = () => {
     }, [editGroupModal, selectedTeam]);
 
     useEffect(() => {
-        if (teamsData?.obtenerEquipos) {
+        if (teamsData?.obtenerEquipos && !teamsLoading) {
             cargarTodosLosComunarios();
         }
-    }, [teamsData]);
+    }, [teamsData, teamsLoading]);
     useEffect(() => {
         if (teamsData?.obtenerEquipos) {
             cargarComunarios();
@@ -444,6 +474,32 @@ const Teams = () => {
             return true;
         });
     };
+
+    // Efecto para cargar los nombres de ubicación
+    useEffect(() => {
+        const loadLocationNames = async () => {
+            if (teamsData?.obtenerEquipos) {
+                const newLocationNames = {};
+                for (const team of teamsData.obtenerEquipos) {
+                    if (team.ubicacion?.coordinates) {
+                        try {
+                            const lugar = await obtenerNombreLugar(
+                                team.ubicacion.coordinates[1],
+                                team.ubicacion.coordinates[0]
+                            );
+                            newLocationNames[team.id] = lugar;
+                        } catch (error) {
+                            console.error("Error al obtener nombre de ubicación:", error);
+                            newLocationNames[team.id] = "Error al obtener ubicación";
+                        }
+                    }
+                }
+                setLocationNames(newLocationNames);
+            }
+        };
+
+        loadLocationNames();
+    }, [teamsData]);
 
 // =========================
 //  CREAR NUEVO EQUIPO
@@ -866,7 +922,20 @@ const Teams = () => {
                         }
                     });
 
+                    // Actualizar el estado local de comunarios
                     setComunarios(prev => prev.filter(c => c.id !== id));
+
+                    // Actualizar el estado de comunariosPorEquipo
+                    setComunariosPorEquipo(prev => {
+                        const newState = { ...prev };
+                        Object.keys(newState).forEach(equipoId => {
+                            newState[equipoId] = newState[equipoId].filter(c => c.id !== id);
+                        });
+                        return newState;
+                    });
+
+                    // Recargar los datos
+                    await cargarTodosLosComunarios();
                     showNotification("success", "Comunario eliminado correctamente");
                 } catch (error) {
                     console.error("Error al eliminar comunario:", error);
@@ -910,7 +979,7 @@ const Teams = () => {
         setTrainingLevelFilter("");
         setSelectedLocation(null);
         setCurrentStep(1);
-        setCommunities([{ nombre: '', edad: '', contacto: '' }]);
+        setCommunities([]);
         setBackpack({});
 
     };
@@ -1109,24 +1178,40 @@ const Teams = () => {
                                             {team.nombre_equipo}
                                         </h3>
 
-                                        <div className="space-y-2 mb-6">
-                                            <p>
-                                                <span className="font-semibold">Miembros:</span>{" "}
-                                                {totalPersonas} 
-                                            </p>
-                                            <p>
-                                                <span className="font-semibold">Estado:</span>{" "}
-                                                {getStatusText(team.estado)}
-                                            </p>
-                                            <p>
-                                                <span className="font-semibold">Ubicación:</span>{" "}
-                                                {team.ubicacion?.coordinates?.join(", ")}
-                                            </p>
-                                            <p>
-                                                <span className="font-semibold">Líder:</span>{" "}
-                                                {team.id_lider_equipo?.nombre} {team.id_lider_equipo?.apellido}
-                                            </p>
-                                        </div>
+                                                                                        <div className="space-y-2 mb-6">
+                                                <p>
+                                                    <span className="font-semibold">Brigadistas:</span>{" "}
+                                                    {totalBrigadistas}
+                                                </p>
+                                                <p>
+                                                    <span className="font-semibold">Comunarios:</span>{" "}
+                                                    {totalComunarios}
+                                                </p>
+                                                <p>
+                                                    <span className="font-semibold">Total Miembros:</span>{" "}
+                                                    {totalPersonas}
+                                                </p>
+                                                <p>
+                                                    <span className="font-semibold">Estado:</span>{" "}
+                                                    {getStatusText(team.estado)}
+                                                </p>
+                                                                                            <div className="relative group">
+                                                <p className="flex items-center">
+                                                    <span className="font-semibold mr-1">Ubicación:</span>
+                                                    <span className="text-gray-700">
+                                                        {locationNames[team.id] || "Cargando ubicación..."}
+                                                    </span>
+                                                </p>
+                                                {/* Tooltip con coordenadas */}
+                                                <div className="absolute z-10 invisible group-hover:visible bg-gray-800 text-white text-xs rounded py-1 px-2 -top-8 left-1/2 transform -translate-x-1/2 whitespace-nowrap">
+                                                    Coordenadas: {team.ubicacion?.coordinates?.join(", ")}
+                                                </div>
+                                            </div>
+                                                <p>
+                                                    <span className="font-semibold">Líder:</span>{" "}
+                                                    {team.id_lider_equipo?.nombre} {team.id_lider_equipo?.apellido}
+                                                </p>
+                                            </div>
 
                                         <div className="flex gap-3">
                                             <button
@@ -1197,9 +1282,23 @@ const Teams = () => {
                                         <div className="px-4 py-2 bg-gray-100 rounded-md">
                                             <span className="font-semibold">Estado:</span> {getStatusText(selectedTeam.estado)}
                                         </div>
-                                        <div className="px-4 py-2 bg-gray-100 rounded-md">
-                                            <span className="font-semibold">Ubicación:</span> {selectedTeam.ubicacion?.coordinates?.join(", ")}
-                                        </div>
+                                                                                        <div className="px-4 py-2 bg-gray-100 rounded-md relative group">
+                                                    <div className="flex items-center">
+                                                        <span className="font-semibold mr-2">Ubicación:</span>
+                                                        <div className="flex items-center text-gray-600">
+                                                            <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 mr-1" viewBox="0 0 20 20" fill="currentColor">
+                                                                <path d="M10.707 2.293a1 1 0 00-1.414 0l-7 7a1 1 0 001.414 1.414L4 10.414V17a1 1 0 001 1h2a1 1 0 001-1v-2a1 1 0 011-1h2a1 1 0 011 1v2a1 1 0 001 1h2a1 1 0 001-1v-6.586l.293.293a1 1 0 001.414-1.414l-7-7z" />
+                                                            </svg>
+                                                            <span>
+                                                                {locationNames[selectedTeam.id] || "Cargando ubicación..."}
+                                                            </span>
+                                                        </div>
+                                                    </div>
+                                                    {/* Tooltip con coordenadas */}
+                                                    <div className="absolute z-10 invisible group-hover:visible bg-gray-800 text-white text-xs rounded py-1 px-2 -top-8 left-1/2 transform -translate-x-1/2 whitespace-nowrap">
+                                                        Coordenadas: {selectedTeam.ubicacion?.coordinates?.join(", ")}
+                                                    </div>
+                                                </div>
                                         {/* Chip gris igual a los de Estado y Ubicación */}
                                         <div className="px-4 py-2 bg-gray-100 rounded-md">
                                             <span className="font-semibold">Total miembros:</span>{" "}
@@ -1221,7 +1320,7 @@ const Teams = () => {
                                     </div>
 
                                     <h3 className="text-xl font-semibold mb-4">Miembros del Equipo</h3>
-                                    <div className="overflow-x-auto">
+                                    <div className="overflow-x-auto mb-6">
                                         <table className="min-w-full bg-white">
                                             <thead className="bg-gray-100">
                                             <tr>
@@ -1258,6 +1357,42 @@ const Teams = () => {
                                                     </td>
                                                 </tr>
                                             ))}
+                                            </tbody>
+                                        </table>
+                                    </div>
+
+                                    <h3 className="text-xl font-semibold mb-4">Comunarios del Equipo</h3>
+                                    <div className="overflow-x-auto">
+                                        <table className="min-w-full bg-white">
+                                            <thead className="bg-gray-100">
+                                            <tr>
+                                                <th className="py-3 px-4 text-left font-semibold">Nombre</th>
+                                                <th className="py-3 px-4 text-left font-semibold">Edad</th>
+                                                <th className="py-3 px-4 text-left font-semibold">Acción</th>
+                                            </tr>
+                                            </thead>
+                                            <tbody className="divide-y divide-gray-200">
+                                            {comunariosPorEquipo[selectedTeam.id]?.map((comunario) => (
+                                                <tr key={comunario.id} className="hover:bg-gray-50">
+                                                    <td className="py-3 px-4">{comunario.nombre}</td>
+                                                    <td className="py-3 px-4">{comunario.edad}</td>
+                                                    <td className="py-3 px-4">
+                                                        <button
+                                                            onClick={() => handleRemoveComunario(comunario.id)}
+                                                            className="text-red-600 hover:text-red-800"
+                                                        >
+                                                            <FaTrash />
+                                                        </button>
+                                                    </td>
+                                                </tr>
+                                            ))}
+                                            {(!comunariosPorEquipo[selectedTeam.id] || comunariosPorEquipo[selectedTeam.id].length === 0) && (
+                                                <tr>
+                                                    <td colSpan="3" className="py-4 text-center text-gray-500">
+                                                        No hay comunarios registrados
+                                                    </td>
+                                                </tr>
+                                            )}
                                             </tbody>
                                         </table>
                                     </div>
@@ -1498,32 +1633,61 @@ const Teams = () => {
                                                 )}
                                             </div>
 
-                                            {editGroupModal && selectedTeam?.miembros?.length > 0 && (
-                                                <div>
-                                                    <h4 className="font-semibold mb-2">Miembros actuales</h4>
-                                                    <div className="bg-gray-50 p-3 rounded-md">
-                                                        <ul className="space-y-2">
-                                                            {selectedTeam.miembros.map(miembro => (
-                                                                <li key={miembro.id_usuario.id} className="flex justify-between items-center">
-        <span>
-            {miembro.id_usuario.nombre} {miembro.id_usuario.apellido}
-        </span>
-                                                                    <button
-                                                                        onClick={() => {
-                                                                            // Llamar a handleRemoveMember y manejar la promesa
-                                                                            handleRemoveMember(miembro.id, selectedTeam.id).catch(error => {
-                                                                                console.error("Error al eliminar miembro:", error);
-                                                                            });
-                                                                        }}
-                                                                        className="text-red-600 hover:text-red-800 text-sm"
-                                                                    >
-                                                                        <FaTrash />
-                                                                    </button>
-                                                                </li>
-                                                            ))}
-                                                        </ul>
+                                            {editGroupModal && (
+                                                <>
+                                                    {selectedTeam?.miembros?.length > 0 && (
+                                                        <div className="mb-6">
+                                                            <h4 className="font-semibold mb-2">Miembros actuales</h4>
+                                                            <div className="bg-gray-50 p-3 rounded-md">
+                                                                <ul className="space-y-2">
+                                                                    {selectedTeam.miembros.map(miembro => (
+                                                                        <li key={miembro.id_usuario.id} className="flex justify-between items-center">
+                                                                            <span>
+                                                                                {miembro.id_usuario.nombre} {miembro.id_usuario.apellido}
+                                                                            </span>
+                                                                            <button
+                                                                                onClick={() => {
+                                                                                    handleRemoveMember(miembro.id, selectedTeam.id).catch(error => {
+                                                                                        console.error("Error al eliminar miembro:", error);
+                                                                                    });
+                                                                                }}
+                                                                                className="text-red-600 hover:text-red-800 text-sm"
+                                                                            >
+                                                                                <FaTrash />
+                                                                            </button>
+                                                                        </li>
+                                                                    ))}
+                                                                </ul>
+                                                            </div>
+                                                        </div>
+                                                    )}
+
+                                                    <div>
+                                                        <h4 className="font-semibold mb-2">Comunarios actuales</h4>
+                                                        <div className="bg-gray-50 p-3 rounded-md">
+                                                            {comunariosPorEquipo[selectedTeam.id]?.length > 0 ? (
+                                                                <ul className="space-y-2">
+                                                                    {comunariosPorEquipo[selectedTeam.id].map(comunario => (
+                                                                        <li key={comunario.id} className="flex justify-between items-center">
+                                                                            <div>
+                                                                                <span className="font-medium">{comunario.nombre}</span>
+                                                                                <span className="text-gray-500 ml-2">({comunario.edad} años)</span>
+                                                                            </div>
+                                                                            <button
+                                                                                onClick={() => handleRemoveComunario(comunario.id)}
+                                                                                className="text-red-600 hover:text-red-800 text-sm"
+                                                                            >
+                                                                                <FaTrash />
+                                                                            </button>
+                                                                        </li>
+                                                                    ))}
+                                                                </ul>
+                                                            ) : (
+                                                                <p className="text-gray-500 text-center py-2">No hay comunarios registrados</p>
+                                                            )}
+                                                        </div>
                                                     </div>
-                                                </div>
+                                                </>
                                             )}
                                         </div>
                                     )}
