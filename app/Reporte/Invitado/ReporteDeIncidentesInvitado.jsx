@@ -10,6 +10,71 @@ import '../../globals.css';
 import { useRouter } from 'next/navigation';
 import { CREAR_REPORTE } from '../../Endpoints/endpoints_graphql';
 
+// Configuración de IndexedDB
+const DB_NAME = 'AlasChiquitanasDB';
+const DB_VERSION = 1;
+const STORE_NAME = 'pendingReports';
+
+// Función para inicializar IndexedDB
+const initDB = () => {
+    return new Promise((resolve, reject) => {
+        const request = indexedDB.open(DB_NAME, DB_VERSION);
+
+        request.onerror = () => reject(request.error);
+        request.onsuccess = () => resolve(request.result);
+
+        request.onupgradeneeded = (event) => {
+            const db = event.target.result;
+            if (!db.objectStoreNames.contains(STORE_NAME)) {
+                db.createObjectStore(STORE_NAME, { keyPath: 'id', autoIncrement: true });
+            }
+        };
+    });
+};
+
+// Función para guardar reporte en IndexedDB
+const saveReportOffline = async (report) => {
+    const db = await initDB();
+    return new Promise((resolve, reject) => {
+        const transaction = db.transaction([STORE_NAME], 'readwrite');
+        const store = transaction.objectStore(STORE_NAME);
+        const request = store.add({
+            ...report,
+            timestamp: new Date().toISOString(),
+            synced: false
+        });
+
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error);
+    });
+};
+
+// Función para obtener reportes pendientes
+const getPendingReports = async () => {
+    const db = await initDB();
+    return new Promise((resolve, reject) => {
+        const transaction = db.transaction([STORE_NAME], 'readonly');
+        const store = transaction.objectStore(STORE_NAME);
+        const request = store.getAll();
+
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error);
+    });
+};
+
+// Función para eliminar un reporte sincronizado
+const deleteReport = async (id) => {
+    const db = await initDB();
+    return new Promise((resolve, reject) => {
+        const transaction = db.transaction([STORE_NAME], 'readwrite');
+        const store = transaction.objectStore(STORE_NAME);
+        const request = store.delete(id);
+
+        request.onsuccess = () => resolve();
+        request.onerror = () => reject(request.error);
+    });
+};
+
 let ColorIcon = L.Icon.extend({
     options: {
         shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-shadow.png',
@@ -206,10 +271,17 @@ const ConfirmModal = ({ isOpen, onClose, onConfirm, formData, position, loading 
 const IncidentForm = () => {
     const router = useRouter();
     const [position, setPosition] = useState(null);
+    const [isOnline, setIsOnline] = useState(window.navigator.onLine);
+    const [syncInProgress, setSyncInProgress] = useState(false);
+    const [lastSyncTime, setLastSyncTime] = useState(null);
     const handleLocationPick = async (latlng) => {
         setPosition(latlng);                              // coloca el marcador
-        const nombre = await obtenerNombreLugar(latlng.lat, latlng.lng);
-        formik.setFieldValue("nombre_lugar", nombre);     // rellena el input
+        if (isOnline) {
+            const nombre = await obtenerNombreLugar(latlng.lat, latlng.lng);
+            formik.setFieldValue("nombre_lugar", nombre);     // rellena el input
+        } else {
+            formik.setFieldValue("nombre_lugar", "Sin conexión - Ubicación pendiente");
+        }
     };
 
     const mapaRef = useRef(null);
@@ -217,9 +289,12 @@ const IncidentForm = () => {
 
     const [mensaje, setMensaje] = useState(null);
     const [showConfirmModal, setShowConfirmModal] = useState(false);
-// Obtiene el nombre de la población más cercana con Nominatim
+    // Obtiene el nombre de la población más cercana con Nominatim
     const obtenerNombreLugar = async (lat, lng) => {
         try {
+            if (!isOnline) {
+                return "Sin conexión - Ubicación pendiente";
+            }
             const res = await fetch(
                 `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lng}&format=json`
             );
@@ -232,8 +307,7 @@ const IncidentForm = () => {
                 "Desconocido"
             );
         } catch (err) {
-            console.error("Error al obtener nombre de lugar:", err);
-            return "Desconocido";
+            return "Ubicación Desconocida";
         }
     };
 
@@ -295,17 +369,129 @@ const IncidentForm = () => {
             setShowConfirmModal(true);
         }
     });
-    // Función para confirmar y enviar el reporte
-    const confirmSubmit = async () => {
+
+    // Función para sincronizar reportes pendientes
+    const syncPendingReports = async () => {
+        if (syncInProgress) return;
+        
+        // Evitar sincronizaciones muy frecuentes (mínimo 5 segundos entre cada intento)
+        if (lastSyncTime && Date.now() - lastSyncTime < 5000) {
+            console.log('Sincronización omitida: muy pronto desde la última sincronización');
+            return;
+        }
+        
         try {
+            setSyncInProgress(true);
+            setLastSyncTime(Date.now());
+            const pendingReports = await getPendingReports();
+            
+            for (const report of pendingReports) {
+                try {
+                    await crearReporte({
+                        variables: {
+                            input: {
+                                nombre_reportante: report.nombre_reportante,
+                                telefono_contacto: report.telefono_contacto,
+                                nombre_lugar: report.nombre_lugar,
+                                tipo_incendio: report.tipo_incendio,
+                                gravedad_incendio: report.gravedad_incendio,
+                                comentario_adicional: report.comentario_adicional,
+                                lat: report.lat,
+                                lng: report.lng,
+                                fecha_hora: report.fecha_hora
+                            }
+                        }
+                    });
+                    
+                    await deleteReport(report.id);
+                    console.log('Reporte sincronizado exitosamente:', report.id);
+                } catch (error) {
+                }
+            }
+        } catch (error) {
+            console.error('Error durante la sincronización:', error);
+        } finally {
+            setSyncInProgress(false);
+        }
+    };
+
+    // Monitorear el estado de la conexión
+    useEffect(() => {
+        let mounted = true;
+        let syncTimeout;
+        
+        const handleOnline = () => {
+            if (!mounted) return;
+            setIsOnline(true);
+            // Solo sincronizar si no hay una sincronización en progreso
+            if (!syncInProgress) {
+                clearTimeout(syncTimeout);
+                syncTimeout = setTimeout(() => {
+                    if (mounted && !syncInProgress) {
+                        syncPendingReports();
+                    }
+                }, 1000);
+            }
+        };
+        
+        const handleOffline = () => {
+            if (!mounted) return;
+            setIsOnline(false);
+        };
+
+        window.addEventListener('online', handleOnline);
+        window.addEventListener('offline', handleOffline);
+
+        // Intentar sincronizar al cargar solo si:
+        // 1. Estamos online
+        // 2. No hay una sincronización en progreso
+        // 3. No se ha sincronizado recientemente
+        if (window.navigator.onLine && !syncInProgress && !lastSyncTime) {
+            syncTimeout = setTimeout(() => {
+                if (mounted && !syncInProgress) {
+                    syncPendingReports();
+                }
+            }, 1000);
+        }
+
+        return () => {
+            mounted = false;
+            clearTimeout(syncTimeout);
+            window.removeEventListener('online', handleOnline);
+            window.removeEventListener('offline', handleOffline);
+        };
+    }, []); // Removemos lastSyncTime como dependencia para evitar re-suscripciones innecesarias
+
+    // Modificar la función confirmSubmit
+    const confirmSubmit = async () => {
+        const reportData = {
+            ...formik.values,
+            lat: position.lat,
+            lng: position.lng,
+            fecha_hora: new Date().toISOString()
+        };
+
+        try {
+            if (!isOnline) {
+                // Guardar offline
+                await saveReportOffline(reportData);
+                setMensaje('Reporte guardado localmente. Se enviará cuando haya conexión.');
+                setShowConfirmModal(false);
+                formik.resetForm();
+                setPosition(null);
+
+                setTimeout(() => {
+                    const token = localStorage.getItem("token");
+                    router.push(token ? '/Homepage' : '/');
+                    setMensaje(null);
+                }, 2000);
+                return;
+            }
+
+            // Enviar online
             const { data } = await crearReporte({
                 variables: {
-                    input: {
-                        ...formik.values,
-                        lat: position.lat,
-                        lng: position.lng,
-                        fecha_hora: new Date().toISOString()
-                    }
+                    input: reportData
                 }
             });
 
@@ -318,17 +504,29 @@ const IncidentForm = () => {
                 const token = localStorage.getItem("token");
                 router.push(token ? '/Homepage' : '/');
                 setMensaje(null);
-            }, 1000);
+            }, 2000);
 
         } catch (error) {
-            setMensaje(`Error al enviar el reporte: ${error.message}`);
-            console.error('Error al crear reporte:', error);
+            // Si hay error al enviar, intentar guardar offline
+            try {
+                await saveReportOffline(reportData);
+                setMensaje('Reporte guardado localmente. Se enviará cuando haya conexión.');
+                setShowConfirmModal(false);
+                formik.resetForm();
+                setPosition(null);
 
-            setTimeout(() => {
-                setMensaje(null);
-            }, 3000);
+                setTimeout(() => {
+                    const token = localStorage.getItem("token");
+                    router.push(token ? '/Homepage' : '/');
+                    setMensaje(null);
+                }, 2000);
+            } catch (offlineError) {
+                setMensaje('Error al guardar el reporte: ' + offlineError.message);
+                setTimeout(() => setMensaje(null), 3000);
+            }
         }
     };
+
     const LogoIcon = () => (
         <a href={isAuthenticated ? "/Homepage" : "/"}>
             <div className="flex items-center">
@@ -669,6 +867,13 @@ const IncidentForm = () => {
                     </div>
                 </div>
             )}
+
+            {/* Indicador de estado de conexión */}
+            <div className={`fixed bottom-4 right-4 px-4 py-2 rounded-full ${isOnline ? 'bg-green-500' : 'bg-yellow-500'} text-white text-sm flex items-center gap-2 shadow-lg`}>
+                <div className={`w-2 h-2 rounded-full ${isOnline ? 'bg-green-200' : 'bg-yellow-200'}`}></div>
+                {isOnline ? 'En línea' : 'Fuera de línea'}
+                {syncInProgress && <span className="ml-2">Sincronizando...</span>}
+            </div>
         </div>
     );
 

@@ -204,10 +204,25 @@ const UsuariosIncidentForm = () => {
     });
 
     const userId = userData?.obtenerUsuarioPorToken?.id;
-    const userTeam = teamsData?.obtenerEquipos?.find(t =>
-        t.id_lider_equipo?.id === userId || t.miembros.some(m => m.id_usuario.id === userId)
-    );
-    const userTeamId = userTeam?.id;
+    const [userTeamId, setUserTeamId] = useState(null);
+
+    useEffect(() => {
+        if (userId && teamsData?.obtenerEquipos) {
+            // Buscar el equipo donde el usuario es miembro
+            const equipoEncontrado = teamsData.obtenerEquipos.find(team => 
+                team.miembros?.some(miembro => 
+                    miembro.id_usuario?.id === userId
+                )
+            );
+
+            if (equipoEncontrado) {
+                console.log('Equipo encontrado:', equipoEncontrado);
+                setUserTeamId(equipoEncontrado.id);
+            } else {
+                console.log('Usuario no encontrado en ningún equipo');
+            }
+        }
+    }, [userId, teamsData]);
 
     const [createComunario] = useMutation(CREAR_COMUNARIO_APOYO, {
         context: {
@@ -642,6 +657,77 @@ const UsuariosIncidentForm = () => {
                 } catch (recursosError) {
                     console.error('Error al procesar recursos:', recursosError);
                     setError(`Reporte creado pero hubo un error con los recursos: ${recursosError.message}`);
+                    setShowConfirmModal(false);
+                    return;
+                }
+            }
+
+            // Crear comunarios si existen
+            if (communities.length > 0) {
+                try {
+                    console.log('Verificando equipo del usuario:', { userId, userTeamId });
+                    
+                    if (!userTeamId) {
+                        const error = new Error('No se pueden registrar comunarios porque el usuario no pertenece a ningún equipo');
+                        console.log('Error: Usuario sin equipo', { userId, teamsData });
+                        throw error;
+                    }
+
+                    console.log('Iniciando creación de comunarios para el equipo:', userTeamId);
+
+                    const results = await Promise.all(
+                        communities.map(async (comunario) => {
+                            if (!comunario.nombre || !comunario.edad) {
+                                console.log('Saltando comunario con datos incompletos:', comunario);
+                                return null;
+                            }
+                            
+                            try {
+                                console.log('Intentando crear comunario:', {
+                                    nombre: comunario.nombre,
+                                    edad: comunario.edad,
+                                    equipoId: userTeamId
+                                });
+
+                                const response = await createComunario({
+                                    variables: {
+                                        input: {
+                                            nombre: comunario.nombre,
+                                            edad: parseInt(comunario.edad),
+                                            Equipoid: userTeamId
+                                        }
+                                    }
+                                });
+
+                                console.log('Comunario creado exitosamente:', response.data);
+                                return response.data;
+                            } catch (error) {
+                                console.log('Error al crear comunario individual:', {
+                                    nombre: comunario.nombre,
+                                    error: error.message
+                                });
+                                return null;
+                            }
+                        })
+                    );
+
+                    const createdComunarios = results.filter(result => result !== null);
+                    console.log('Resumen de creación de comunarios:', {
+                        total: communities.length,
+                        creados: createdComunarios.length,
+                        fallidos: communities.length - createdComunarios.length
+                    });
+
+                    if (createdComunarios.length === 0 && communities.length > 0) {
+                        throw new Error('No se pudo crear ningún comunario');
+                    }
+
+                } catch (error) {
+                    console.log('Error en el proceso de creación de comunarios:', {
+                        message: error.message,
+                        stack: error.stack
+                    });
+                    setError(error.message || 'Se creó el reporte pero hubo un error al registrar los comunarios');
                     setShowConfirmModal(false);
                     return;
                 }
@@ -1278,46 +1364,77 @@ const UsuariosIncidentForm = () => {
                                 ) : null}
                             </section>
                                     
-                            {/* === COMUNARIOS LOCALES === 
+                            {/* === COMUNARIOS LOCALES === */}
                             <section>
-                                <label className="block font-medium text-gray-700 mb-2">Comunarios locales (opcional)</label>
-                                {communities.length > 0 && communities.map((comm, idx) => (
-                                    <div key={idx} className="flex items-end gap-3 mb-2">
-                                        <input
-                                            type="text"
-                                            placeholder="Nombre"
-                                            className="flex-1 border border-gray-300 rounded-lg p-2"
-                                            value={comm.nombre}
-                                            onChange={(e) => updateCommunity(idx, 'nombre', e.target.value)}
-                                        />
-                                        <input
-                                            type="number"
-                                            min="1"
-                                            className="w-24 border border-gray-300 rounded-lg p-2"
-                                            placeholder="Edad"
-                                            value={comm.edad}
-                                            onChange={(e) => updateCommunity(idx, 'edad', e.target.value)}
-                                        />
-                                        <button
-                                            type="button"
-                                            onClick={() => removeCommunity(idx)}
-                                            className="text-red-600 hover:text-red-800"
+                                <header className="flex items-center mb-4">
+                                    <div className="bg-orange-100 p-2 rounded-lg mr-3">
+                                        <svg
+                                            xmlns="http://www.w3.org/2000/svg"
+                                            className="h-5 w-5 text-orange-600"
+                                            fill="none"
+                                            viewBox="0 0 24 24"
+                                            stroke="currentColor"
                                         >
-                                            Eliminar
-                                        </button>
+                                            <path
+                                                strokeLinecap="round"
+                                                strokeLinejoin="round"
+                                                strokeWidth={2}
+                                                d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z"
+                                            />
+                                        </svg>
                                     </div>
-                                ))}
-                                <button
-                                    type="button"
-                                    onClick={addCommunity}
-                                    className="mt-2 text-orange-600 hover:text-orange-800 flex items-center gap-2"
-                                >
-                                    <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
-                                        <path fillRule="evenodd" d="M10 3a1 1 0 011 1v5h5a1 1 0 110 2h-5v5a1 1 0 11-2 0v-5H4a1 1 0 110-2h5V4a1 1 0 011-1z" clipRule="evenodd" />
-                                    </svg>
-                                    Añadir comunario
-                                </button>
-                            </section>*/}
+                                    <h3 className="font-semibold text-lg text-gray-800">
+                                        Comunarios Locales
+                                    </h3>
+                                </header>
+                                <div className="bg-gray-50 p-6 rounded-lg">
+                                    <p className="text-gray-600 mb-4">Registre a los comunarios que se unirán al equipo en campo (opcional)</p>
+                                    {communities.map((comm, idx) => (
+                                        <div key={idx} className="flex items-end gap-3 mb-4">
+                                            <div className="flex-1">
+                                                <label className="block text-sm font-medium text-gray-700 mb-1">Nombre</label>
+                                                <input
+                                                    type="text"
+                                                    placeholder="Nombre del comunario"
+                                                    className="w-full border border-gray-300 rounded-lg p-2"
+                                                    value={comm.nombre}
+                                                    onChange={(e) => updateCommunity(idx, 'nombre', e.target.value)}
+                                                />
+                                            </div>
+                                            <div className="w-32">
+                                                <label className="block text-sm font-medium text-gray-700 mb-1">Edad</label>
+                                                <input
+                                                    type="number"
+                                                    min="1"
+                                                    className="w-full border border-gray-300 rounded-lg p-2"
+                                                    placeholder="Edad"
+                                                    value={comm.edad}
+                                                    onChange={(e) => updateCommunity(idx, 'edad', e.target.value)}
+                                                />
+                                            </div>
+                                            <button
+                                                type="button"
+                                                onClick={() => removeCommunity(idx)}
+                                                className="bg-red-100 text-red-600 p-2 rounded-lg hover:bg-red-200 transition-colors"
+                                            >
+                                                <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                                                    <path fillRule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clipRule="evenodd" />
+                                                </svg>
+                                            </button>
+                                        </div>
+                                    ))}
+                                    <button
+                                        type="button"
+                                        onClick={addCommunity}
+                                        className="mt-2 flex items-center gap-2 text-orange-600 hover:text-orange-700 transition-colors"
+                                    >
+                                        <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                                            <path fillRule="evenodd" d="M10 3a1 1 0 011 1v5h5a1 1 0 110 2h-5v5a1 1 0 11-2 0v-5H4a1 1 0 110-2h5V4a1 1 0 011-1z" clipRule="evenodd" />
+                                        </svg>
+                                        Añadir comunario
+                                    </button>
+                                </div>
+                            </section>
 
                             {/* === BOTONES === */}
                             <div className="flex flex-wrap justify-between items-center">

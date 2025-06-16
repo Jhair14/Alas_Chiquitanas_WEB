@@ -1,10 +1,11 @@
 "use client";
 
-import React, { useState, useMemo } from "react";
+import React, { useState, useMemo, useEffect } from "react";
 import GenerateReportButton from "../../Components/GenerateReportButton";
 import dynamic from "next/dynamic";
 import { useQuery } from "@apollo/client";
-import { OBTENER_REPORTES, OBTENER_EQUIPOS, OBTENER_RECURSOS } from "../../Endpoints/endpoints_graphql";
+import { OBTENER_REPORTES, OBTENER_EQUIPOS, OBTENER_RECURSOS, OBTENER_USUARIOS } from "../../Endpoints/endpoints_graphql";
+import { useApolloClient } from "@apollo/client";
 
 // Carga dinámica para el componente de mapa (evita SSR)
 const MapWithMarker = dynamic(() => import("../../Components/MapWithMarker"), {
@@ -45,10 +46,18 @@ export default function HistorialReportes() {
         fetchPolicy: "network-only",
     });
 
+    const client = useApolloClient();
+
     // Estados para filtros
     const [search, setSearch] = useState("");
     const [dayFilter, setDayFilter] = useState("7");
-    const [viewMode, setViewMode] = useState("reportes"); // 'reportes' o 'equipos' o 'recursos'
+    const [viewMode, setViewMode] = useState("reportes"); // 'reportes' o 'equipos' o 'recursos' o 'reportes_usuario'
+    const [userReports, setUserReports] = useState([]);
+    const [reportResources, setReportResources] = useState({});
+    const [loadingUserReports, setLoadingUserReports] = useState(false);
+    const [errorUserReports, setErrorUserReports] = useState(null);
+    const [usersMap, setUsersMap] = useState({});
+    const [userTeamMap, setUserTeamMap] = useState({});
 
     // Filtrar reportes
     const reportesFiltrados = useMemo(() => {
@@ -99,6 +108,77 @@ export default function HistorialReportes() {
             return fechaB.getTime() - fechaA.getTime();
         });
     }, [recursosData, search, dayFilter]);
+
+    // Fetch user reports
+    useEffect(() => {
+        if (viewMode === "reportes_usuario") {
+            const fetchUserReports = async () => {
+                setLoadingUserReports(true);
+                try {
+                    // Fetch reports from REST API
+                    const response = await fetch('http://localhost:5000/api/reportes');
+                    const data = await response.json();
+                    
+                    if (data.success) {
+                        setUserReports(data.data);
+                        
+                        // Fetch resources for each report
+                        const resourcesPromises = data.data.map(async (report) => {
+                            const resourceResponse = await fetch(`http://localhost:5000/api/reporte-recurso/reporte/${report.reporte_id}`);
+                            const resourceData = await resourceResponse.json();
+                            if (resourceData.success) {
+                                setReportResources(prev => ({
+                                    ...prev,
+                                    [report.reporte_id]: resourceData.data
+                                }));
+                            }
+                        });
+
+                        // Get users data from GraphQL
+                        const usersResponse = await client.query({
+                            query: OBTENER_USUARIOS,
+                            fetchPolicy: "network-only"
+                        });
+
+                        // Create a map of user IDs to user names
+                        const userMap = {};
+                        usersResponse.data.obtenerUsuarios.forEach(user => {
+                            userMap[user.id] = `${user.nombre} ${user.apellido}`;
+                        });
+                        setUsersMap(userMap);
+
+                        // Get teams data from GraphQL
+                        const teamsResponse = await client.query({
+                            query: OBTENER_EQUIPOS,context: {
+                                headers: {
+                                    authorization: `Bearer ${localStorage.getItem('token')}`,
+                                },
+                            },
+                            fetchPolicy: "network-only"
+                        });
+
+                        // Create a map of user IDs to team names
+                        const teamMap = {};
+                        teamsResponse.data.obtenerEquipos.forEach(team => {
+                            team.miembros?.forEach(miembro => {
+                                if (miembro.id_usuario?.id) {
+                                    teamMap[miembro.id_usuario.id] = team.nombre_equipo;
+                                }
+                            });
+                        });
+                        setUserTeamMap(teamMap);
+
+                        await Promise.all(resourcesPromises);
+                    }
+                } catch (error) {
+                    setErrorUserReports(error.message);
+                } finally {
+                    setLoadingUserReports(false);
+                }
+            };
+            fetchUserReports();
+        }
+    }, [viewMode]);
 
     // Funciones utilitarias
     function parseDate(dateStr) {
@@ -197,14 +277,18 @@ export default function HistorialReportes() {
                             ? "Historial de Reportes"
                             : viewMode === "equipos"
                                 ? "Listado de Equipos"
-                                : "Gestión de Recursos"}
+                                : viewMode === "recursos"
+                                    ? "Gestión de Recursos"
+                                    : "Reportes de Usuario"}
                     </h2>
                     <p className="text-gray-600 mt-2">
                         {viewMode === "reportes"
                             ? "Visualiza todos los reportes de incendios registrados en el sistema"
                             : viewMode === "equipos"
                                 ? "Visualiza todos los equipos de respuesta registrados en el sistema"
-                                : "Visualiza y gestiona los recursos solicitados por los equipos"}
+                                : viewMode === "recursos"
+                                    ? "Visualiza y gestiona los recursos solicitados por los equipos"
+                                    : "Visualiza los reportes detallados de usuarios"}
                     </p>
                 </div>
 
@@ -217,14 +301,16 @@ export default function HistorialReportes() {
                                 ? "Buscar por nombre o lugar..."
                                 : viewMode === "equipos"
                                     ? "Buscar por nombre de equipo..."
-                                    : "Buscar por código, descripción o equipo..."
+                                    : viewMode === "recursos"
+                                        ? "Buscar por código, descripción o equipo..."
+                                        : "Buscar por nombre de usuario..."
                         }
                         className="flex-grow min-w-[220px] border border-gray-300 rounded-lg px-4 py-2 focus:ring focus:ring-orange-200 focus:border-orange-500"
                         value={search}
                         onChange={(e) => setSearch(e.target.value)}
                     />
 
-                    {(viewMode === "reportes" || viewMode === "recursos") && (
+                    {(viewMode === "reportes" || viewMode === "recursos" || viewMode === "reportes_usuario") && (
                         <select
                             value={dayFilter}
                             onChange={(e) => setDayFilter(e.target.value)}
@@ -267,6 +353,16 @@ export default function HistorialReportes() {
                             }`}
                         >
                             Ver Recursos
+                        </button>
+                        <button
+                            onClick={() => setViewMode("reportes_usuario")}
+                            className={`px-4 py-2 rounded-full text-sm border transition ${
+                                viewMode === "reportes_usuario"
+                                    ? "bg-[#e25822] text-white border-[#e25822]"
+                                    : "bg-white text-gray-700 border-gray-300 hover:bg-gray-100"
+                            }`}
+                        >
+                            Ver Reportes de Usuario
                         </button>
                     </div>
                 </div>
@@ -600,6 +696,145 @@ export default function HistorialReportes() {
                             )}
                         </div>
                     )}
+
+                    {viewMode === "reportes_usuario" && (
+                        <div className="p-6">
+                            {loadingUserReports && (
+                                <div className="flex justify-center items-center py-12">
+                                    <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-[#e25822]"></div>
+                                    <p className="ml-4 text-gray-500">Cargando reportes de usuario...</p>
+                                </div>
+                            )}
+
+                            {errorUserReports && (
+                                <div className="text-center py-12">
+                                    <div className="text-red-600">
+                                        <p className="font-medium text-lg">Error al cargar reportes de usuario</p>
+                                        <p className="text-sm text-red-500 mt-2">{errorUserReports}</p>
+                                    </div>
+                                </div>
+                            )}
+
+                            {!loadingUserReports && userReports.length === 0 && (
+                                <div className="text-center py-12">
+                                    <div className="text-gray-400 mb-4">
+                                        <svg className="mx-auto h-16 w-16" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1} d="M9 5H7a2 2 0 00-2 2v10a2 2 0 002 2h8a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
+                                        </svg>
+                                    </div>
+                                    <p className="text-gray-500 text-lg">No se encontraron reportes de usuario</p>
+                                </div>
+                            )}
+
+                            {!loadingUserReports && userReports.length > 0 && (
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                                    {userReports.map((report) => (
+                                        <div key={report.reporte_id} className="bg-white rounded-xl shadow-lg overflow-hidden border border-gray-200">
+                                            {/* Encabezado del reporte */}
+                                            <div className="bg-gradient-to-r from-orange-500 to-orange-600 px-6 py-4">
+                                                <div className="flex justify-between items-center">
+                                                    <h3 className="text-xl font-bold text-white">{report.nombre_incidente}</h3>
+                                                    <span className={`px-3 py-1 rounded-full text-sm font-medium ${
+                                                        report.controlado 
+                                                            ? "bg-green-100 text-green-800" 
+                                                            : "bg-red-100 text-red-800"
+                                                    }`}>
+                                                        {report.controlado ? "Controlado" : "No Controlado"}
+                                                    </span>
+                                                </div>
+                                                <p className="text-orange-100 text-sm mt-1">
+                                                    {new Date(report.fecha_reporte).toLocaleDateString("es-ES", {
+                                                        day: "2-digit",
+                                                        month: "2-digit",
+                                                        year: "numeric",
+                                                        hour: "2-digit",
+                                                        minute: "2-digit"
+                                                    })}
+                                                </p>
+                                            </div>
+
+                                            {/* Contenido del reporte */}
+                                            <div className="p-6">
+                                                {/* Información del usuario y equipo */}
+                                                <div className="mb-4">
+                                                    <div className="flex items-center mb-3">
+                                                        <div className="h-10 w-10 rounded-full bg-orange-100 flex items-center justify-center">
+                                                            <svg className="h-6 w-6 text-orange-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+                                                            </svg>
+                                                        </div>
+                                                        <div className="ml-3">
+                                                            <p className="text-sm font-medium text-gray-900">
+                                                                {usersMap[report.usuario_id] || "Usuario no encontrado"}
+                                                            </p>
+                                                            <p className="text-sm text-gray-500">
+                                                                Equipo: {userTeamMap[report.usuario_id] || "No asignado"}
+                                                            </p>
+                                                        </div>
+                                                    </div>
+                                                </div>
+
+                                                {/* Detalles del incidente */}
+                                                <div className="space-y-4">
+                                                    <div className="bg-gray-50 rounded-lg p-4">
+                                                        <h4 className="text-sm font-medium text-gray-700 mb-2">Detalles del Incidente</h4>
+                                                        <div className="grid grid-cols-2 gap-4">
+                                                            <div>
+                                                                <p className="text-sm text-gray-600">Extensión</p>
+                                                                <p className="font-medium">{report.extension}</p>
+                                                            </div>
+                                                            <div>
+                                                                <p className="text-sm text-gray-600">Bomberos</p>
+                                                                <p className="font-medium">{report.numero_bomberos}</p>
+                                                            </div>
+                                                        </div>
+                                                    </div>
+
+                                                    {/* Condiciones climáticas */}
+                                                    <div className="bg-blue-50 rounded-lg p-4">
+                                                        <h4 className="text-sm font-medium text-blue-800 mb-2">Condiciones Climáticas</h4>
+                                                        <p className="text-sm text-blue-700">{report.condiciones_clima}</p>
+                                                    </div>
+
+                                                    {/* Recursos asignados */}
+                                                    {reportResources[report.reporte_id] && (
+                                                        <div className="bg-green-50 rounded-lg p-4">
+                                                            <h4 className="text-sm font-medium text-green-800 mb-2">Solicitud de Recursos Faltantes</h4>
+                                                            <div className="space-y-2">
+                                                                {reportResources[report.reporte_id].map((recurso) => (
+                                                                    <div key={recurso.recurso_id} className="flex justify-between items-center">
+                                                                        <span className="text-sm text-green-700">{recurso.nombre}</span>
+                                                                        <span className="text-sm font-medium text-green-800">{recurso.cantidad}</span>
+                                                                    </div>
+                                                                ))}
+                                                            </div>
+                                                        </div>
+                                                    )}
+
+                                                    {/* Información adicional */}
+                                                    {(report.apoyo_externo || report.comentario_adicional) && (
+                                                        <div className="bg-yellow-50 rounded-lg p-4">
+                                                            <h4 className="text-sm font-medium text-yellow-800 mb-2">Información Adicional</h4>
+                                                            {report.apoyo_externo && (
+                                                                <p className="text-sm text-yellow-700 mb-2">
+                                                                    <span className="font-medium">Apoyo Externo:</span> {report.apoyo_externo}
+                                                                </p>
+                                                            )}
+                                                            {report.comentario_adicional && (
+                                                                <p className="text-sm text-yellow-700">
+                                                                    <span className="font-medium">Comentarios:</span> {report.comentario_adicional}
+                                                                </p>
+                                                            )}
+                                                        </div>
+                                                    )}
+                                                </div>
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+                            )}
+                        </div>
+                    )}
                 </div>
 
                 {/* Resumen */}
@@ -611,7 +846,9 @@ export default function HistorialReportes() {
                                     ? `Total Reportes: ${reportesFiltrados.length}`
                                     : viewMode === "equipos"
                                         ? `Total Equipos: ${equiposFiltrados.length}`
-                                        : `Total Recursos: ${recursosFiltrados.length}`}
+                                        : viewMode === "recursos"
+                                            ? `Total Recursos: ${recursosFiltrados.length}`
+                                            : `Total Reportes de Usuario: ${userReports.length}`}
                             </h3>
                             {viewMode === "recursos" && (
                                 <div className="flex gap-4 text-sm">

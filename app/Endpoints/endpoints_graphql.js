@@ -385,10 +385,6 @@ export const CREAR_COMUNARIO_APOYO = gql`
       nombre
       edad
       entidad_perteneciente
-      Equipoid {
-        id
-        nombre_equipo
-      }
     }
   }
 `;
