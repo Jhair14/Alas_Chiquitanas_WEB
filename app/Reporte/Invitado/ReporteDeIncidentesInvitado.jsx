@@ -510,7 +510,7 @@ const IncidentForm = () => {
             // Si hay error al enviar, intentar guardar offline
             try {
                 await saveReportOffline(reportData);
-                setMensaje('Reporte guardado localmente. Se enviará cuando haya conexión.');
+                setMensaje('Reporte guardado, Se enviará cuando haya conexión.');
                 setShowConfirmModal(false);
                 formik.resetForm();
                 setPosition(null);
@@ -868,12 +868,7 @@ const IncidentForm = () => {
                 </div>
             )}
 
-            {/* Indicador de estado de conexión */}
-            <div className={`fixed bottom-4 right-4 px-4 py-2 rounded-full ${isOnline ? 'bg-green-500' : 'bg-yellow-500'} text-white text-sm flex items-center gap-2 shadow-lg`}>
-                <div className={`w-2 h-2 rounded-full ${isOnline ? 'bg-green-200' : 'bg-yellow-200'}`}></div>
-                {isOnline ? 'En línea' : 'Fuera de línea'}
-                {syncInProgress && <span className="ml-2">Sincronizando...</span>}
-            </div>
+            
         </div>
     );
 
