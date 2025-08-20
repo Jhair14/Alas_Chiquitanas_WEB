@@ -12,7 +12,7 @@ import { OBTENER_EQUIPOS, OBTENER_USUARIOS, CREAR_EQUIPO, ACTUALIZAR_EQUIPO, AGR
 
 
 
-const MapWithNoSSR = dynamic(() => import('../components/Map'), {
+const MapWithNoSSR = dynamic(() => import('../Components/Map'), {
     ssr: false
 });
 
