@@ -1,7 +1,7 @@
 "use client";
 import React, { useEffect, useState } from 'react';
 import Link from 'next/link';
-import Footer from "../components/Footer";
+import Footer from "../Components/Footer";
 import { useRouter } from "next/navigation";
 import { useQuery } from '@apollo/client';
 import { OBTENER_NOTICIAS } from '../Endpoints/endpoints_graphql';
