@@ -1,6 +1,6 @@
 "use client";
 import React, { useState, useEffect } from "react";
-import Footer from "../components/Footer";
+import Footer from "../Components/Footer";
 import TeamHeader from "../Teams/TeamHeader";
 import { useSearchParams } from "next/navigation";
 import { useQuery, useMutation, useLazyQuery } from '@apollo/client';
