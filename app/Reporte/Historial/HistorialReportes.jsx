@@ -116,7 +116,7 @@ export default function HistorialReportes() {
                 setLoadingUserReports(true);
                 try {
                     // Fetch reports from REST API
-                    const response = await fetch('http://localhost:5000/api/reportes');
+                    const response = await fetch('https://alaschiquitanasapinosql-production.up.railway.app/api/reportes');
                     const data = await response.json();
                     
                     if (data.success) {
@@ -124,7 +124,7 @@ export default function HistorialReportes() {
                         
                         // Fetch resources for each report
                         const resourcesPromises = data.data.map(async (report) => {
-                            const resourceResponse = await fetch(`http://localhost:5000/api/reporte-recurso/reporte/${report.reporte_id}`);
+                            const resourceResponse = await fetch(`https://alaschiquitanasapinosql-production.up.railway.app/api/reporte-recurso/reporte/${report.reporte_id}`);
                             const resourceData = await resourceResponse.json();
                             if (resourceData.success) {
                                 setReportResources(prev => ({
