@@ -378,7 +378,7 @@ const UsuariosIncidentForm = () => {
 
             console.log('Enviando reporte a la API:', datosReporte);
 
-            const response = await fetch('http://localhost:5000/api/reportes', {
+            const response = await fetch('https://alaschiquitanasapinosql-production.up.railway.app/api/reportes', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -432,7 +432,7 @@ const UsuariosIncidentForm = () => {
             console.log('Enviando recursos:', recursos);
 
             const recursosCreados = await Promise.all(recursos.map(async (recurso) => {
-                const response = await fetch('http://localhost:5000/api/recursos', {
+                const response = await fetch('https://alaschiquitanasapinosql-production.up.railway.app/api/recursos', {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
@@ -496,7 +496,7 @@ const UsuariosIncidentForm = () => {
 
                 console.log('Enviando relación:', relacionData);
 
-                const response = await fetch('http://localhost:5000/api/reporte-recurso', {
+                const response = await fetch('https://alaschiquitanasapinosql-production.up.railway.app/api/reporte-recurso', {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json'
