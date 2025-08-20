@@ -1,6 +1,11 @@
-import ReporteInvitado from './ReporteDeIncidentesInvitado';
+import { Suspense } from 'react';
+import ClientReporteInvitado from './ClientReporteInvitado';
 
 export default function ReportePage() {
-    return <ReporteInvitado />;
+    return (
+        <Suspense fallback={null}>
+            <ClientReporteInvitado />
+        </Suspense>
+    );
 }
 

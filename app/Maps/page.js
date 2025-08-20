@@ -1,6 +1,11 @@
-import Mapas from '../Maps/MapaDeSeguimiento';
+import { Suspense } from 'react';
+import ClientMapas from './ClientMapas';
 
 export default function UsuarioPage() {
-    return <Mapas />;
+    return (
+        <Suspense fallback={null}>
+            <ClientMapas />
+        </Suspense>
+    );
 }
 

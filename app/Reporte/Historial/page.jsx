@@ -1,6 +1,11 @@
-import ReporteHistorial from './HistorialReportes';
+import { Suspense } from 'react';
+import ClientHistorialReportes from './ClientHistorialReportes';
 
 export default function ReportePage() {
-    return <ReporteHistorial />;
+	return (
+		<Suspense fallback={null}>
+			<ClientHistorialReportes />
+		</Suspense>
+	);
 }
 

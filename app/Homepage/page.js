@@ -1,6 +1,11 @@
-import Home from '../Homepage/Home';
+import { Suspense } from 'react';
+import ClientHome from './ClientHome';
 
 export default function UsuarioPage() {
-    return <Home />;
+    return (
+        <Suspense fallback={null}>
+            <ClientHome />
+        </Suspense>
+    );
 }
 

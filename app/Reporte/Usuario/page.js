@@ -1,6 +1,11 @@
-import ReporteUsuarios from './ReporteDeIncidentesUsuarioRegistrados';
+import { Suspense } from 'react';
+import ClientReporteUsuario from './ClientReporteUsuario';
 
 export default function ReportePage() {
-    return <ReporteUsuarios />;
+    return (
+        <Suspense fallback={null}>
+            <ClientReporteUsuario />
+        </Suspense>
+    );
 }
 

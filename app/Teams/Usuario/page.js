@@ -1,8 +1,13 @@
 // app/Teams/page.js
-import UsersTeam from "./UsersTeam";
+import { Suspense } from 'react';
+import ClientUsersTeam from './ClientUsersTeam';
 
 function UsersTeamPage() {
-    return <UsersTeam />;
+    return (
+        <Suspense fallback={null}>
+            <ClientUsersTeam />
+        </Suspense>
+    );
 }
 
 
