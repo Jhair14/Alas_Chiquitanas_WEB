@@ -47,9 +47,15 @@ function DashboardIncendios() {
         { id: 2, nombre: "Equipo Beta", lat: -17.8133, lng: -63.1523, personal: 3 },
         { id: 3, nombre: "Equipo Gamma", lat: -17.7633, lng: -63.2123, personal: 4 },
     ]);
+    useEffect(() => {
+        // Solo en cliente
+        if (typeof window !== "undefined") {
+            setToken(localStorage.getItem("token"));
+        }
+    }, []);
     const { data: userData, loading: userLoading } = useQuery(OBTENER_USUARIO, {
-        variables: { token: localStorage.getItem("token") },
-        skip: !localStorage.getItem("token")
+        variables: { token },
+        skip: !token,
     });
 
     const [reportesIncendio, setReportesIncendio] = useState([]);
@@ -85,15 +91,14 @@ function DashboardIncendios() {
             hour12: false,
         });
     };
-
+    const authContext = useMemo(() => (
+        token ? { headers: { authorization: `Bearer ${token}` } } : undefined
+    ), [token]);
     // Obtener equipos desde la API
     const {data: teamsData, loading: teamsLoading, error: teamsError} = useQuery(OBTENER_EQUIPOS, {
-        context: {
-            headers: {
-                authorization: `Bearer ${localStorage.getItem('token')}`,
-            },
-        },
+        context: authContext,
         fetchPolicy: 'network-only',
+        skip: !token,
         onError: (error) => {
             if (error.graphQLErrors.some(e => e.message === 'No autorizado')) {
                 window.location.href = '/Login';
