@@ -2,7 +2,6 @@
 import React, { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from "next/navigation";
-import Footer from "../components/Footer";
 import { useQuery } from '@apollo/client';
 import { OBTENER_NOTICIAS } from '../Endpoints/endpoints_graphql';
 
@@ -308,7 +307,6 @@ function Home() {
                 </section>
             </main>
 
-            <Footer />
         </div>
     );
 }
